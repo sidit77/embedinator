@@ -37,20 +37,63 @@ impl BitOr for FileFlags {
     }
 }
 
-
-// https://learn.microsoft.com/en-us/windows/win32/api/verrsrc/ns-verrsrc-vs_fixedfileinfo
 pub struct FixedVersionInfo {
     file_version: [u16; 4],
     product_version: [u16; 4],
     file_flags: FileFlags
 }
 
-#[derive(Default, Debug, Clone)]
-pub struct ResourceBuilder;
+#[derive(Clone, Eq, PartialEq)]
+pub struct IconGroup {
+    icons: Vec<Icon>
+}
+
+impl From<Icon> for IconGroup {
+    fn from(value: Icon) -> Self {
+        Self::from_iter([value])
+    }
+}
+
+impl FromIterator<Icon> for IconGroup {
+    fn from_iter<T: IntoIterator<Item=Icon>>(iter: T) -> Self {
+        Self {
+            icons: iter.into_iter().collect()
+        }
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct Icon(Vec<u8>);
+
+impl Icon {
+
+    pub fn from_png_bytes(data: Vec<u8>) -> Self {
+        assert_eq!(&data[..8], &[137, 80, 78, 71, 13, 10, 26, 10], "Invalid PNG file");
+        assert_eq!(&data[12..16], b"IHDR", "Invalid PNG file");
+        // let width = u32::from_be_bytes((&data[16..20]).try_into().unwrap());
+        // let height = u32::from_be_bytes((&data[20..24]).try_into().unwrap());
+        let bit_depth = data[24];
+        let color_type = data[25];
+        assert_eq!((color_type, bit_depth), (6, 8), "The png must contain 32bpp RGBA data");
+        Self(data)
+    }
+
+}
+
+#[derive(Default, Clone)]
+pub struct ResourceBuilder {
+    icons: Vec<(u16, IconGroup)>
+}
 
 impl ResourceBuilder {
 
-    pub fn compile(self) -> ResourceFile {
+    pub fn add_icon_group(mut self, id: u16, group: impl Into<IconGroup>) -> Self {
+        assert!(!self.icons.iter().any(|(i, _ )| *i == id), "Duplicate icon group id");
+        self.icons.push((id, group.into()));
+        self
+    }
+
+    pub fn compile(&self) -> ResourceFile {
         let mut res = ResourceFile(Vec::new());
 
         res.write_empty(); // Files seem to start with an empty resource
@@ -59,6 +102,10 @@ impl ResourceBuilder {
             product_version: [0, 1, 0, 0],
             file_flags: FileFlags::NONE,
         });
+        let mut next_icon_id = 128;
+        for (id, group) in &self.icons {
+            res.write_icon_group(*id, group, &mut next_icon_id);
+        }
         res
     }
 
