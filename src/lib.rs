@@ -44,25 +44,6 @@ pub struct FixedVersionInfo {
 }
 
 #[derive(Clone, Eq, PartialEq)]
-pub struct IconGroup {
-    icons: Vec<Icon>
-}
-
-impl From<Icon> for IconGroup {
-    fn from(value: Icon) -> Self {
-        Self::from_iter([value])
-    }
-}
-
-impl FromIterator<Icon> for IconGroup {
-    fn from_iter<T: IntoIterator<Item=Icon>>(iter: T) -> Self {
-        Self {
-            icons: iter.into_iter().collect()
-        }
-    }
-}
-
-#[derive(Clone, Eq, PartialEq)]
 pub struct Icon(Vec<u8>);
 
 impl Icon {
@@ -80,16 +61,29 @@ impl Icon {
 
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+struct IconGroupEntry {
+    icon_id: u16,
+    icon_size: usize
+}
+
 #[derive(Default, Clone)]
 pub struct ResourceBuilder {
-    icons: Vec<(u16, IconGroup)>
+    icon_groups: Vec<(u16, [IconGroupEntry; 1])>,
+    icons: Vec<(u16, Icon)>
 }
 
 impl ResourceBuilder {
 
-    pub fn add_icon_group(mut self, id: u16, group: impl Into<IconGroup>) -> Self {
-        assert!(!self.icons.iter().any(|(i, _ )| *i == id), "Duplicate icon group id");
-        self.icons.push((id, group.into()));
+    pub fn add_icon(mut self, id: u16, icon: Icon) -> Self {
+        assert!(!self.icon_groups.iter().any(|(i, _ )| *i == id), "Duplicate icon id");
+        const ICON_BASE_ID: u16 = 128;
+        let icon_id = ICON_BASE_ID + self.icons.len() as u16;
+        self.icon_groups.push((id, [IconGroupEntry {
+            icon_id,
+            icon_size: icon.0.len(),
+        }]));
+        self.icons.push((icon_id, icon));
         self
     }
 
@@ -102,9 +96,11 @@ impl ResourceBuilder {
             product_version: [0, 1, 0, 0],
             file_flags: FileFlags::NONE,
         });
-        let mut next_icon_id = 128;
-        for (id, group) in &self.icons {
-            res.write_icon_group(*id, group, &mut next_icon_id);
+        for (id, icon) in &self.icons {
+            res.write_icon(*id, icon);
+        }
+        for (id, entries) in &self.icon_groups {
+            res.write_icon_group(*id, entries)
         }
         res
     }

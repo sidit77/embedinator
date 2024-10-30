@@ -1,5 +1,5 @@
 use std::iter::repeat_n;
-use crate::{FixedVersionInfo, IconGroup, ResourceFile};
+use crate::{FixedVersionInfo, Icon, IconGroupEntry, ResourceFile};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 #[repr(u16)]
@@ -227,30 +227,30 @@ impl ResourceFile {
         self.realign();
     }
 
-    pub(crate) fn write_icon_group(&mut self, id: u16, group: &IconGroup, next_icon_id: &mut u16) {
+    pub(crate) fn write_icon_group(&mut self, id: u16, entries: &[IconGroupEntry]) {
         self.write_resource(ResourceType::IconGroup, id, |w| {
             // it doesn't seems to matter what we write for most of these fields
             w.write_u16(0x0); // idReserved
             w.write_u16(0x1); // idType
-            w.write_u16(group.icons.len().try_into().expect("Too many icons in group")); // idCount
+            w.write_u16(entries.len().try_into().expect("Too many icons in group")); // idCount
 
-            for (icon, id) in group.icons.iter().zip(*next_icon_id..) {
+            for entry in entries {
                 w.write_u8(0x0); // bWidth
                 w.write_u8(0x0); // bHeight
                 w.write_u8(0x0); // bColorCount
                 w.write_u8(0x0); // bReserved
                 w.write_u16(0x1); // wPlanes
                 w.write_u16(32); // wBitCount
-                w.write_u32(icon.0.len().try_into().expect("icon file too large")); // dwBytesInRes
-                w.write_u16(id);
+                w.write_u32(entry.icon_size.try_into().expect("icon file too large")); // dwBytesInRes
+                w.write_u16(entry.icon_id);
             }
         });
-        for icon in &group.icons {
-            self.write_resource(ResourceType::Icon, *next_icon_id, |w| {
-                w.0.extend_from_slice(&icon.0);
-            });
-            *next_icon_id += 1;
-        }
+    }
+
+    pub(crate) fn write_icon(&mut self, id: u16, icon: &Icon) {
+        self.write_resource(ResourceType::Icon, id, |w| {
+            w.0.extend_from_slice(&icon.0);
+        });
     }
 
 }
