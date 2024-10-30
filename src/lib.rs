@@ -117,8 +117,17 @@ pub struct ResourceFile(Vec<u8>);
 
 impl ResourceFile {
 
-    pub fn write_to_file(self) -> std::io::Result<()> {
-        std::fs::write("test.res", self.0)
+    pub fn write_to_file(&self) -> std::io::Result<()> {
+        std::fs::write("test.res", &self.0)
+    }
+
+    pub fn save_and_link(&self) -> std::io::Result<()> {
+        let out_dir = std::env::var("OUT_DIR")
+            .expect("No OUT_DIR env var");
+        let out_file = format!("{out_dir}/resources.res");
+        std::fs::write(&out_file, &self.0)?;
+        println!("cargo:rustc-link-arg-bins={}", &out_file);
+        Ok(())
     }
 
 }
