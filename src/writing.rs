@@ -1,35 +1,7 @@
 use std::iter::repeat_n;
-use crate::{FixedVersionInfo, Icon, IconGroupEntry, ResourceFile};
+use crate::{FixedVersionInfo, Icon, IconGroupEntry, ResourceFile, ResourceType};
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-#[repr(u16)]
-pub enum ResourceType {
-    None = 0x0,
-    Version = 0x10,
-    Icon = 0x3,
-    IconGroup = 0xE,
-    Manifest = 0x18
-}
 
-impl ResourceType {
-
-    fn flags(self) -> u16 {
-        const MOVEABLE: u16 = 0x0010;
-        const PURE : u16 = 0x0020;
-        #[allow(dead_code)]
-        const PRELOAD : u16 = 0x0040;
-        const DISCARDABLE : u16 = 0x1000;
-
-        match self {
-            ResourceType::None => 0x0,
-            ResourceType::Version => MOVEABLE | PURE,
-            ResourceType::Icon => DISCARDABLE | MOVEABLE,
-            ResourceType::IconGroup => DISCARDABLE | MOVEABLE | PURE,
-            ResourceType::Manifest => MOVEABLE | PURE
-        }
-    }
-
-}
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 #[repr(u16)]

@@ -1,6 +1,9 @@
 use std::ops::BitOr;
+use std::ptr::copy;
+use crate::coff::{CoffWriter, IconGroupWriter};
 
 mod writing;
+mod coff;
 
 pub struct FileFlags(u32);
 
@@ -37,6 +40,36 @@ impl BitOr for FileFlags {
     }
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[repr(u16)]
+pub enum ResourceType {
+    None = 0x0,
+    Version = 0x10,
+    Icon = 0x3,
+    IconGroup = 0xE,
+    Manifest = 0x18
+}
+
+impl ResourceType {
+
+    fn flags(self) -> u16 {
+        const MOVEABLE: u16 = 0x0010;
+        const PURE : u16 = 0x0020;
+        #[allow(dead_code)]
+        const PRELOAD : u16 = 0x0040;
+        const DISCARDABLE : u16 = 0x1000;
+
+        match self {
+            ResourceType::None => 0x0,
+            ResourceType::Version => MOVEABLE | PURE,
+            ResourceType::Icon => DISCARDABLE | MOVEABLE,
+            ResourceType::IconGroup => DISCARDABLE | MOVEABLE | PURE,
+            ResourceType::Manifest => MOVEABLE | PURE
+        }
+    }
+
+}
+
 pub struct FixedVersionInfo {
     file_version: [u16; 4],
     product_version: [u16; 4],
@@ -70,7 +103,8 @@ struct IconGroupEntry {
 #[derive(Default, Clone)]
 pub struct ResourceBuilder {
     icon_groups: Vec<(u16, [IconGroupEntry; 1])>,
-    icons: Vec<(u16, Icon)>
+    icons: Vec<(u16, Icon)>,
+    manifest: Option<String>
 }
 
 impl ResourceBuilder {
@@ -105,7 +139,81 @@ impl ResourceBuilder {
         res
     }
 
+    pub fn compile_to_coff(self) {
+        //https://gitlab.com/careyevans/embed-manifest/-/blob/main/src/embed/mod.rs?ref_type=heads
+
+        let mut coff = CoffWriter::default();
+
+
+        const LANG_US: u32 = 0x0409;
+
+        let number_of_resource_types = 1 +
+            u16::from(self.manifest.is_some()) +
+            u16::from(self.icons.len() > 0) +
+            u16::from(self.icon_groups.len() > 0);
+
+        let mut data_entries = Vec::new();
+        let mut res_dir = coff.write_directory(number_of_resource_types);
+        {
+            let entry = res_dir
+                .subdirectory(&mut coff, ResourceType::Version as u32, 1)
+                .subdirectory(&mut coff, 1, 1)
+                .data_entry(&mut coff, LANG_US);
+            data_entries.push(entry);
+        }
+        if self.manifest.is_some() {
+            let entry = res_dir
+                .subdirectory(&mut coff, ResourceType::Manifest as u32, 1)
+                .subdirectory(&mut coff, 1, 1)
+                .data_entry(&mut coff, LANG_US);
+            data_entries.push(entry);
+        }
+        if self.icons.len() > 0 {
+            let mut icon_dir = res_dir
+                .subdirectory(&mut coff, ResourceType::Icon as u32, self.icons.len() as u16);
+            for (id, _) in &self.icons {
+                let entry = icon_dir
+                    .subdirectory(&mut coff, *id as u32, 1)
+                    .data_entry(&mut coff, LANG_US);
+                data_entries.push(entry);
+            }
+        }
+        if self.icon_groups.len() > 0 {
+            let mut icon_dir = res_dir
+                .subdirectory(&mut coff, ResourceType::IconGroup as u32, self.icon_groups.len() as u16);
+            for (id, _) in &self.icon_groups {
+                let entry = icon_dir
+                    .subdirectory(&mut coff, *id as u32, 1)
+                    .data_entry(&mut coff, LANG_US);
+                data_entries.push(entry);
+            }
+        }
+
+        {
+            let mut next_entry = data_entries.iter_mut();
+            let mut next_entry = move || next_entry.next().expect("not enough data entries");
+
+            next_entry().write_data(&mut coff, (&[234u8]).as_slice());
+            if let Some(manifest) = &self.manifest {
+                next_entry().write_data(&mut coff, manifest.as_bytes());
+            }
+            for (_, icon) in &self.icons {
+                next_entry().write_data(&mut coff, &icon.0);
+            }
+            for (_, group) in &self.icon_groups {
+                next_entry().write_data(&mut coff, &IconGroupWriter(group));
+            }
+        }
+
+    }
+
 }
+
+enum ResourceEntry {
+    Directory(Vec<(u16, ResourceEntry)>),
+    Data(Vec<u16>)
+}
+
 
 #[must_use]
 #[derive(Clone, Eq, PartialEq)]
