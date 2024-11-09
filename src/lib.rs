@@ -1,6 +1,5 @@
 use std::ops::BitOr;
-use std::ptr::copy;
-use crate::coff::{CoffWriter, IconGroupWriter};
+use crate::coff::{CoffWriter, IconGroupWriter, TargetType};
 
 mod writing;
 mod coff;
@@ -139,28 +138,28 @@ impl ResourceBuilder {
         res
     }
 
-    pub fn compile_to_coff(self) {
+    pub fn compile_to_coff(self) -> ResourceFile {
         //https://gitlab.com/careyevans/embed-manifest/-/blob/main/src/embed/mod.rs?ref_type=heads
 
-        let mut coff = CoffWriter::default();
+        let mut coff = CoffWriter::new(TargetType::X86_64);
 
 
         const LANG_US: u32 = 0x0409;
 
-        let number_of_resource_types = 1 +
+        let number_of_resource_types =// 1 +
             u16::from(self.manifest.is_some()) +
             u16::from(self.icons.len() > 0) +
             u16::from(self.icon_groups.len() > 0);
 
         let mut data_entries = Vec::new();
         let mut res_dir = coff.write_directory(number_of_resource_types);
-        {
-            let entry = res_dir
-                .subdirectory(&mut coff, ResourceType::Version as u32, 1)
-                .subdirectory(&mut coff, 1, 1)
-                .data_entry(&mut coff, LANG_US);
-            data_entries.push(entry);
-        }
+        //{
+        //    let entry = res_dir
+        //        .subdirectory(&mut coff, ResourceType::Version as u32, 1)
+        //        .subdirectory(&mut coff, 1, 1)
+        //        .data_entry(&mut coff, LANG_US);
+        //    data_entries.push(entry);
+        //}
         if self.manifest.is_some() {
             let entry = res_dir
                 .subdirectory(&mut coff, ResourceType::Manifest as u32, 1)
@@ -193,7 +192,7 @@ impl ResourceBuilder {
             let mut next_entry = data_entries.iter_mut();
             let mut next_entry = move || next_entry.next().expect("not enough data entries");
 
-            next_entry().write_data(&mut coff, (&[234u8]).as_slice());
+            //next_entry().write_data(&mut coff, (&[234u8]).as_slice());
             if let Some(manifest) = &self.manifest {
                 next_entry().write_data(&mut coff, manifest.as_bytes());
             }
@@ -205,15 +204,17 @@ impl ResourceBuilder {
             }
         }
 
+        {
+            for e in data_entries {
+                e.write_relocation(&mut coff);
+            }
+        }
+
+        ResourceFile(coff.finish())
+
     }
 
 }
-
-enum ResourceEntry {
-    Directory(Vec<(u16, ResourceEntry)>),
-    Data(Vec<u16>)
-}
-
 
 #[must_use]
 #[derive(Clone, Eq, PartialEq)]
@@ -222,7 +223,7 @@ pub struct ResourceFile(Vec<u8>);
 impl ResourceFile {
 
     pub fn write_to_file(&self) -> std::io::Result<()> {
-        std::fs::write("test.res", &self.0)
+        std::fs::write("test.lib", &self.0)
     }
 
     pub fn save_and_link(&self) -> std::io::Result<()> {

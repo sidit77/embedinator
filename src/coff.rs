@@ -1,49 +1,143 @@
 use std::iter::repeat_n;
+use std::time::SystemTime;
 use crate::IconGroupEntry;
 
-#[derive(Default)]
-pub struct CoffWriter(Vec<u8>);
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum TargetType {
+    Aarch64,
+    I386,
+    X86_64
+}
 
-impl BinaryWriter for CoffWriter {
-    fn pos(&self) -> usize {
-        self.0.len()
+impl TargetType {
+    pub fn id(self) -> u16 {
+        match self {
+            TargetType::Aarch64 => 0xaa64,
+            TargetType::I386 => 0x014c,
+            TargetType::X86_64 => 0x8664,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum RelocationType {
+    Rva32
+}
+
+impl RelocationType {
+
+    pub fn id(self, target: TargetType) -> u16 {
+        const IMAGE_REL_AMD64_ADDR32NB: u16 = 0x0003;
+        const IMAGE_REL_ARM64_ADDR32NB: u16 = 0x0002;
+        const IMAGE_REL_I386_DIR32NB: u16 = 0x0007;
+        match self {
+            RelocationType::Rva32 => match target {
+                TargetType::Aarch64 => IMAGE_REL_ARM64_ADDR32NB,
+                TargetType::I386 => IMAGE_REL_I386_DIR32NB,
+                TargetType::X86_64 => IMAGE_REL_AMD64_ADDR32NB
+            }
+        }
     }
 
-    fn reserve(&mut self, amount: usize) {
-        self.0.extend(repeat_n(0, amount))
-    }
+}
 
-    fn write_bytes(&mut self, data: &[u8]) {
-        self.0.extend_from_slice(data)
-    }
-
-    fn write_bytes_at(&mut self, index: usize, data: &[u8]) {
-        self.0[index..(index + data.len())].copy_from_slice(data)
-    }
+pub struct CoffWriter {
+    data: Vec<u8>,
+    relocations: u16,
+    target: TargetType
 }
 
 impl CoffWriter {
 
+    const HEADER_SIZE: usize = 60;
 
-    /// 16 bytes
-    pub fn write_directory_table(&mut self, entries: u16) {
-        let _ = entries;
-    }
-
-    /// 8 bytes
-    pub fn write_directory_entry(&mut self, id: u32, offset: u32, leaf: bool) {
-        let _ = (id, offset, leaf);
-    }
-
-    /// 16 bytes
-    pub fn write_data_entry(&mut self, offset: u32, size: u32) {
-        let _ = (offset, size);
+    pub fn new(target: TargetType) -> Self {
+        Self {
+            data: vec![0u8; Self::HEADER_SIZE],
+            relocations: 0,
+            target,
+        }
     }
 
     pub fn write_directory(&mut self, entries: u16) -> CoffDirectoryWriter {
         CoffDirectoryWriter::allocate(self, entries)
     }
 
+    pub fn write_relocation(&mut self, address: u32, ty: RelocationType) {
+        self.relocations += 1;
+        self.write_u32(address);
+        self.write_bytes(&[0, 0, 0, 0]);
+        self.write_u16(ty.id(self.target));
+    }
+
+    pub fn finish(mut self) -> Vec<u8> {
+        let target = self.target;
+        let relocations = self.relocations;
+        let timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as u32);
+
+        let pointer_to_symbol_table = self.pos();
+        let data_size = self.pos() - Self::HEADER_SIZE;
+
+        // Write the symbols and auxiliary data for the section.
+        self.write_bytes(b".rsrc\0\0\0"); // name
+        self.write_bytes(&[0, 0, 0, 0]); // address
+        self.write_bytes(&[1, 0]); // section number (1-based)
+        self.write_bytes(&[0, 0, 3, 1]); // type = 0, class = static, aux symbols = 1
+        self.write_u32(data_size as u32);
+        self.write_u16(self.relocations);
+        self.write_bytes(&[0; 12]);
+
+        // Write the empty string table.
+        self.write_bytes(&[0; 4]);
+
+        {
+            let mut h = self.slice(0, Self::HEADER_SIZE);
+
+            h.write_u16(target.id());
+            h.write_bytes(&[1, 0]); // number of sections
+            h.write_u32(timestamp);
+            h.write_u32(pointer_to_symbol_table as u32);
+            h.write_bytes(&[2, 0, 0, 0]); // number of symbol table entries
+            h.write_bytes(&[0; 4]); // optional header size = 0, characteristics = 0
+
+            // Write the section header.
+            h.write_bytes(b".rsrc\0\0\0");
+            h.write_u32(0); // physical address
+            h.write_u32(0); // virtual address
+            h.write_u32(data_size as u32);
+            h.write_bytes(&[60, 0, 0, 0]); // pointer to raw data
+            h.write_u32((data_size + Self::HEADER_SIZE) as u32); // pointer to relocations
+            h.write_bytes(&[0; 4]); // pointer to line numbers
+            h.write_u16(relocations);
+            h.write_bytes(&[0; 2]); // number of line numbers
+            h.write_bytes(&[0x40, 0, 0x30, 0xc0]); // characteristics
+
+        }
+
+
+        self.data
+    }
+
+}
+
+impl BinaryWriter for CoffWriter {
+    fn pos(&self) -> usize {
+        self.data.len()
+    }
+
+    fn reserve(&mut self, amount: usize) {
+        self.data.extend(repeat_n(0, amount))
+    }
+
+    fn write_bytes(&mut self, data: &[u8]) {
+        self.data.extend_from_slice(data)
+    }
+
+    fn write_bytes_at(&mut self, index: usize, data: &[u8]) {
+        self.data[index..(index + data.len())].copy_from_slice(data)
+    }
 }
 
 pub struct CoffDirectoryWriter {
@@ -74,15 +168,16 @@ impl CoffDirectoryWriter {
     fn write_entry(&mut self, cw: &mut CoffWriter, id: u32, leaf: bool) {
         const SUB_DIR_BIT: usize = 0x80000000;
         assert!(self.current_index < self.final_index, "Tried to add more entries to a directory than allowed ({} {})", self.current_index, self.final_index);
-        let mut offset = cw.pos();
+        let mut offset = cw.pos() - CoffWriter::HEADER_SIZE;
         assert_eq!(offset & SUB_DIR_BIT, 0, "Too much data");
 
         if !leaf {
             offset |= SUB_DIR_BIT;
         }
 
-        cw.write_u32_at(self.current_index + 0, id);
-        cw.write_u32_at(self.current_index + size_of::<u32>(), offset as u32);
+        let mut slice = cw.slice(self.current_index, Self::ENTRY_SIZE);
+        slice.write_u32(id);
+        slice.write_u32(offset as u32);
 
         self.current_index += Self::ENTRY_SIZE;
     }
@@ -131,12 +226,18 @@ impl CoffDataEntry {
         let length = coff.pos() - start;
         coff.align_to(8);
 
-        coff.write_u32_at(self.index + 0 * size_of::<u32>(), start as u32);  // OffsetToData
-        coff.write_u32_at(self.index + 1 * size_of::<u32>(), length as u32); // Size
-        coff.write_u32_at(self.index + 2 * size_of::<u32>(), 0);          // CodePage
-        coff.write_u32_at(self.index + 3 * size_of::<u32>(), 0);          // Reserve
+        let offset = start - CoffWriter::HEADER_SIZE;
+        let mut slice = coff.slice(self.index, Self::ENTRY_SIZE);
+        slice.write_u32(offset as u32);  // OffsetToData
+        slice.write_u32(length as u32); // Size
+        slice.write_u32(0);          // CodePage
+        slice.write_u32(0);          // Reserve
 
         self.written = true;
+    }
+
+    pub fn write_relocation(&self, coff: &mut CoffWriter) {
+        coff.write_relocation(self.index as u32, RelocationType::Rva32)
     }
 
 }
@@ -160,10 +261,6 @@ pub trait BinaryWriter {
         self.write_bytes(&v.to_le_bytes())
     }
 
-    fn write_u32_at(&mut self, index: usize, v: u32) {
-        self.write_bytes_at(index, &v.to_le_bytes())
-    }
-
     fn write_u16(&mut self, v: u16) {
         self.write_bytes(&v.to_le_bytes())
     }
@@ -172,11 +269,53 @@ pub trait BinaryWriter {
         self.write_bytes(&v.to_le_bytes())
     }
 
+    fn slice(&mut self, index: usize, length: usize) -> BinarySlice<'_> where Self: Sized {
+        BinarySlice {
+            inner: self,
+            start: index,
+            length,
+            pos: 0,
+        }
+    }
+
     fn align_to(&mut self, i: usize) {
-        let required_padding = (i - (self.pos() % i));
+        let required_padding = i - (self.pos() % i);
         self.reserve(required_padding)
     }
 
+}
+
+pub struct BinarySlice<'a> {
+    inner: &'a mut dyn BinaryWriter,
+    start: usize,
+    length: usize,
+    pos: usize
+}
+
+impl<'a> BinaryWriter for BinarySlice<'a> {
+    fn pos(&self) -> usize {
+        self.pos
+    }
+
+    fn reserve(&mut self, _: usize) {
+        unimplemented!()
+    }
+
+    fn write_bytes(&mut self, data: &[u8]) {
+        assert!(self.pos + data.len() <= self.length);
+        self.inner.write_bytes_at(self.start + self.pos, data);
+        self.pos += data.len();
+    }
+
+    fn write_bytes_at(&mut self, _: usize, _: &[u8]) {
+        unimplemented!()
+    }
+}
+
+impl<'a> Drop for BinarySlice<'a> {
+    fn drop(&mut self) {
+        assert_eq!(self.pos, self.length)
+    }
 }
 
 pub trait BinaryWritable {
