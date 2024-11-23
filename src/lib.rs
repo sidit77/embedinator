@@ -181,27 +181,13 @@ impl ResourceBuilder {
 
         const LANG_US: u32 = 0x0409;
 
-        let number_of_resource_types =// 1 +
+        let number_of_resource_types = 1 +
             u16::from(self.manifest.is_some()) +
             u16::from(self.icons.len() > 0) +
             u16::from(self.icon_groups.len() > 0);
 
         let mut data_entries = Vec::new();
         let mut res_dir = coff.write_directory(number_of_resource_types);
-        //{
-        //    let entry = res_dir
-        //        .subdirectory(&mut coff, ResourceType::Version as u32, 1)
-        //        .subdirectory(&mut coff, 1, 1)
-        //        .data_entry(&mut coff, LANG_US);
-        //    data_entries.push(entry);
-        //}
-        if self.manifest.is_some() {
-            let entry = res_dir
-                .subdirectory(&mut coff, ResourceType::Manifest as u32, 1)
-                .subdirectory(&mut coff, 1, 1)
-                .data_entry(&mut coff, LANG_US);
-            data_entries.push(entry);
-        }
         if self.icons.len() > 0 {
             let mut icon_dir = res_dir
                 .subdirectory(&mut coff, ResourceType::Icon as u32, self.icons.len() as u16);
@@ -222,21 +208,37 @@ impl ResourceBuilder {
                 data_entries.push(entry);
             }
         }
+        if self.manifest.is_some() {
+            let entry = res_dir
+                .subdirectory(&mut coff, ResourceType::Manifest as u32, 1)
+                .subdirectory(&mut coff, 1, 1)
+                .data_entry(&mut coff, LANG_US);
+            data_entries.push(entry);
+        }
+        {
+            let entry = res_dir
+                .subdirectory(&mut coff, ResourceType::Version as u32, 1)
+                .subdirectory(&mut coff, 1, 1)
+                .data_entry(&mut coff, LANG_US);
+            data_entries.push(entry);
+        }
 
         {
             let mut next_entry = data_entries.iter_mut();
             let mut next_entry = move || next_entry.next().expect("not enough data entries");
 
-            //next_entry().write_data(&mut coff, (&[234u8]).as_slice());
-            if let Some(manifest) = &self.manifest {
-                next_entry().write_data(&mut coff, manifest.as_bytes());
-            }
+
             for (_, icon) in &self.icons {
                 next_entry().write_data(&mut coff, icon);
             }
             for (_, group) in &self.icon_groups {
                 next_entry().write_data(&mut coff, group.as_slice());
             }
+            if let Some(manifest) = &self.manifest {
+                next_entry().write_data(&mut coff, manifest.as_bytes());
+            }
+            next_entry().write_data(&mut coff, &self.version);
+
         }
 
         {
