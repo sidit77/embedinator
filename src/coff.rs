@@ -44,6 +44,8 @@ impl RelocationType {
 pub struct CoffWriter {
     data: Vec<u8>,
     relocations: u16,
+    data_start: usize,
+    relocation_start: usize,
     target: TargetType
 }
 
@@ -55,6 +57,8 @@ impl CoffWriter {
         Self {
             data: vec![0u8; Self::HEADER_SIZE],
             relocations: 0,
+            data_start: Self::HEADER_SIZE,
+            relocation_start: 0,
             target,
         }
     }
@@ -70,6 +74,10 @@ impl CoffWriter {
         self.write_u16(ty.id(self.target));
     }
 
+    pub fn start_relocations(&mut self) {
+        self.relocation_start = self.pos();
+    }
+
     pub fn finish(mut self) -> Vec<u8> {
         let target = self.target;
         let relocations = self.relocations;
@@ -78,7 +86,8 @@ impl CoffWriter {
             .map_or(0, |d| d.as_secs() as u32);
 
         let pointer_to_symbol_table = self.pos();
-        let data_size = self.pos() - Self::HEADER_SIZE;
+        let relocation_start = self.relocation_start;
+        let data_size = relocation_start - self.data_start;
 
         // Write the symbols and auxiliary data for the section.
         self.write_bytes(b".rsrc\0\0\0"); // name
@@ -108,7 +117,7 @@ impl CoffWriter {
             h.write_u32(0); // virtual address
             h.write_u32(data_size as u32);
             h.write_bytes(&[60, 0, 0, 0]); // pointer to raw data
-            h.write_u32((data_size + Self::HEADER_SIZE) as u32); // pointer to relocations
+            h.write_u32(relocation_start as u32); // pointer to relocations
             h.write_bytes(&[0; 4]); // pointer to line numbers
             h.write_u16(relocations);
             h.write_bytes(&[0; 2]); // number of line numbers
@@ -137,6 +146,11 @@ impl BinaryWriter for CoffWriter {
 
     fn write_bytes_at(&mut self, index: usize, data: &[u8]) {
         self.data[index..(index + data.len())].copy_from_slice(data)
+    }
+
+    fn align_to(&mut self, i: usize) {
+        let required_padding = i - ((self.pos() - Self::HEADER_SIZE) % i);
+        self.reserve(required_padding)
     }
 }
 
@@ -237,7 +251,7 @@ impl CoffDataEntry {
     }
 
     pub fn write_relocation(&self, coff: &mut CoffWriter) {
-        coff.write_relocation(self.index as u32, RelocationType::Rva32)
+        coff.write_relocation((self.index - coff.data_start) as u32, RelocationType::Rva32)
     }
 
 }

@@ -1,5 +1,5 @@
-use std::ops::BitOr;
 use crate::coff::{CoffWriter, IconGroupWriter, TargetType};
+use std::ops::BitOr;
 
 mod writing;
 mod coff;
@@ -108,6 +108,12 @@ pub struct ResourceBuilder {
 
 impl ResourceBuilder {
 
+    pub fn add_manifest<S: Into<String>>(mut self, manifest: S) -> Self {
+        assert!(self.manifest.is_none(), "Manifest already set");
+        self.manifest = Some(manifest.into());
+        self
+    }
+
     pub fn add_icon(mut self, id: u16, icon: Icon) -> Self {
         assert!(!self.icon_groups.iter().any(|(i, _ )| *i == id), "Duplicate icon id");
         const ICON_BASE_ID: u16 = 128;
@@ -205,6 +211,7 @@ impl ResourceBuilder {
         }
 
         {
+            coff.start_relocations();
             for e in data_entries {
                 e.write_relocation(&mut coff);
             }
