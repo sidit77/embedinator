@@ -1,9 +1,15 @@
 use std::iter::repeat_n;
-use crate::{ResourceFile, ResourceType};
+use crate::ResourceType;
 use crate::binary::{BinaryWritable, BinaryWriter};
 
+#[derive(Default)]
+pub struct ResWriter(Vec<u8>);
 
-impl ResourceFile {
+impl ResWriter {
+
+    pub fn finish(self) -> Vec<u8> {
+        self.0
+    }
 
     fn realign(&mut self) {
         self.align_to(4)
@@ -24,7 +30,7 @@ impl ResourceFile {
         self.write_u16(id);
     }
 
-    pub(crate) fn write_resource<B: BinaryWritable +?Sized>(&mut self, ty: ResourceType, name: u16, data: &B) {
+    pub fn write_resource<B: BinaryWritable +?Sized>(&mut self, ty: ResourceType, name: u16, data: &B) {
         let header_start = self.pos();
         let data_size_loc = self.reserve_u32();
         let header_size_loc = self.reserve_u32();
@@ -51,7 +57,7 @@ impl ResourceFile {
 
 }
 
-impl BinaryWriter for ResourceFile {
+impl BinaryWriter for ResWriter {
     fn pos(&self) -> usize {
         self.0.len()
     }

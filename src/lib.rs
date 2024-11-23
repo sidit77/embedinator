@@ -1,5 +1,9 @@
 use std::collections::{HashMap, HashSet};
-use crate::coff::{CoffWriter, TargetType};
+use std::path::Path;
+use crate::coff::{CoffWriter};
+use crate::res::ResWriter;
+
+pub use crate::coff::TargetType;
 
 mod res;
 mod coff;
@@ -156,8 +160,8 @@ impl ResourceBuilder {
         self
     }
 
-    pub fn compile(&self) -> ResourceFile {
-        let mut res = ResourceFile(Vec::new());
+    pub fn compile_to_res(&self) -> ResourceFile {
+        let mut res = ResWriter::default();
 
         res.write_resource(ResourceType::None, 0, &()); // Files seem to start with an empty resource
         res.write_resource(ResourceType::Version, 1, &self.version);
@@ -170,14 +174,14 @@ impl ResourceBuilder {
         if let Some(manifest) = &self.manifest {
             res.write_resource(ResourceType::Manifest, 1, manifest.as_bytes());
         }
-        res
+        ResourceFile{
+            data: res.finish(),
+            kind: ResourceFileKind::Res
+        }
     }
 
-    pub fn compile_to_coff(self) -> ResourceFile {
-        //https://gitlab.com/careyevans/embed-manifest/-/blob/main/src/embed/mod.rs?ref_type=heads
-
-        let mut coff = CoffWriter::new(TargetType::X86_64);
-
+    pub fn compile_to_coff(self, target: TargetType) -> ResourceFile {
+        let mut coff = CoffWriter::new(target);
 
         const LANG_US: u32 = 0x0409;
 
@@ -248,27 +252,56 @@ impl ResourceBuilder {
             }
         }
 
-        ResourceFile(coff.finish())
+        ResourceFile{
+            data: coff.finish(),
+            kind: ResourceFileKind::Coff
+        }
+    }
 
+    pub fn finish(self) {
+        let target = std::env::var("CARGO_CFG_TARGET_ARCH")
+            .expect("No CARGO_CFG_TARGET_ARCH env var");
+        let target = match target.as_str() {
+            "x86_64" => TargetType::X86_64,
+            "x86" => TargetType::I386,
+            "aarch64" => TargetType::Aarch64,
+            _ => panic!("Unsupported target arch")
+        };
+        self
+            .compile_to_coff(target)
+            .save_and_link()
+            .expect("Failed to save and link resources");
     }
 
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+enum ResourceFileKind {
+    Coff,
+    Res
+}
+
 #[must_use]
 #[derive(Clone, Eq, PartialEq)]
-pub struct ResourceFile(Vec<u8>);
+pub struct ResourceFile {
+    data: Vec<u8>,
+    kind: ResourceFileKind
+}
 
 impl ResourceFile {
 
-    pub fn write_to_file(&self) -> std::io::Result<()> {
-        std::fs::write("test.res", &self.0)
+    pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
+        std::fs::write(path, &self.data)
     }
 
     pub fn save_and_link(&self) -> std::io::Result<()> {
         let out_dir = std::env::var("OUT_DIR")
             .expect("No OUT_DIR env var");
-        let out_file = format!("{out_dir}/resources.res");
-        std::fs::write(&out_file, &self.0)?;
+        let out_file = format!("{out_dir}/resources.{}", match self.kind {
+            ResourceFileKind::Coff => "lib",
+            ResourceFileKind::Res => "res"
+        });
+        std::fs::write(&out_file, &self.data)?;
         println!("cargo:rustc-link-arg-bins={}", &out_file);
         Ok(())
     }
