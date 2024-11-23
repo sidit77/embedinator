@@ -1,4 +1,5 @@
-use crate::{Icon, IconGroupEntry};
+use crate::binary::version::{FieldType, FieldValue};
+use crate::{FixedVersionInfo, Icon, IconGroupEntry};
 
 pub trait BinaryWriter {
 
@@ -121,4 +122,161 @@ impl BinaryWritable for () {
     fn write_to<W: BinaryWriter>(&self, _: &mut W) {
         // do nothing
     }
+}
+
+impl BinaryWritable for FixedVersionInfo {
+    fn write_to<W: BinaryWriter>(&self, writer: &mut W) {
+        let mut w = version::VersionWriter(writer);
+        // https://learn.microsoft.com/en-us/windows/win32/menurc/vs-versioninfo
+        w.write_field(FieldType::Binary, "VS_VERSION_INFO", FieldValue::header(|w | {
+            // https://learn.microsoft.com/en-us/windows/win32/api/verrsrc/ns-verrsrc-vs_fixedfileinfo
+            w.write_u32(0xFEEF04BD); //magic number
+            w.write_u32(1 << 16); // struct version
+
+            w.write_u16(self.file_version[1]);
+            w.write_u16(self.file_version[0]);
+            w.write_u16(self.file_version[3]);
+            w.write_u16(self.file_version[2]);
+
+            w.write_u16(self.product_version[1]);
+            w.write_u16(self.product_version[0]);
+            w.write_u16(self.product_version[3]);
+            w.write_u16(self.product_version[2]);
+
+            w.write_u32(0x3f); // fileflagsmask
+            w.write_u32(self.file_flags.0);
+            w.write_u32(0x00040004); // VOS_NT_WINDOWS32
+            w.write_u32(0x00000001); // VFT_APP
+            w.write_u32(0x0);
+
+            w.write_u32(0x0); //Timestamp
+            w.write_u32(0x0);
+        }),
+        |w| {
+            // https://learn.microsoft.com/en-us/windows/win32/menurc/stringfileinfo
+            w.write_field(FieldType::Text, "StringFileInfo", FieldValue::none(), |w| {
+                // https://learn.microsoft.com/en-us/windows/win32/menurc/stringtable
+                w.write_field(FieldType::Text, "000004b0", FieldValue::none(), |w| {
+                    let fields = [
+                        ("ProductVersion", "0.1.0"),
+                        ("FileVersion", "0.1.0"),
+                        ("ProductName", "rusty-twinkle-tray"),
+                        ("FileDescription", "rusty-twinkle-tray")
+                    ];
+                    for (k, v) in fields {
+                        let l = u16::try_from(v.encode_utf16().count() + 1).expect("Key too long");
+                        // https://learn.microsoft.com/en-us/windows/win32/menurc/string-str
+                        w.write_field(FieldType::Text, k, FieldValue::other(l), |w| w.write_utf16(v));
+                    }
+                });
+            });
+            // https://learn.microsoft.com/en-us/windows/win32/menurc/varfileinfo
+            w.write_field(FieldType::Text, "VarFileInfo", FieldValue::none(), |w| {
+                w.write_field(FieldType::Binary, "Translation", FieldValue::header(|w| {
+                    w.write_u32(0x04b00000);
+                }), |_| {})
+            })
+        });
+        w.align_to(4);
+    }
+}
+
+mod version {
+    use crate::binary::BinaryWriter;
+
+    #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+    #[repr(u16)]
+    pub enum FieldType {
+        Binary = 0x0,
+        Text = 0x1
+    }
+
+    pub enum FieldValue<F> {
+        None,
+        Header(F),
+        Other(u16)
+    }
+
+    impl<F: FnOnce(&mut VersionWriter<'_>)> FieldValue<F> {
+        pub fn header(writer: F) -> Self {
+            Self::Header(writer)
+        }
+    }
+
+    impl FieldValue<fn(&mut VersionWriter<'_>)> {
+        pub fn none() -> Self {
+            Self::None
+        }
+
+        pub fn other(v: u16) -> Self {
+            Self::Other(v)
+        }
+    }
+
+    pub struct VersionWriter<'a>(pub &'a mut dyn BinaryWriter);
+
+    impl<'a> VersionWriter<'a> {
+
+        fn reserve_u16(&mut self) -> usize {
+            let pos = self.pos();
+            self.write_u16(0);
+            pos
+        }
+
+        fn update_u16(&mut self, location: usize, v: u16) {
+            self.write_bytes_at(location, &v.to_le_bytes())
+        }
+
+        pub fn write_utf16(&mut self, text: &str) {
+            for c in text.encode_utf16() {
+                self.write_u16(c);
+            }
+            self.write_u16(0x0);
+        }
+
+        pub fn write_field<F: FnOnce(&mut Self), B: FnOnce(&mut Self)>(&mut self, field_type: FieldType, key: &str, value: FieldValue<F>, body: B) {
+            self.align_to(4);
+            let field_start = self.pos();
+            let field_length_pos = self.reserve_u16();
+            let header_length_pos = self.reserve_u16();
+            self.write_u16(field_type as u16);
+            self.write_utf16(key);
+            self.align_to(4);
+
+            match value {
+                FieldValue::None => {}
+                FieldValue::Header(f) => {
+                    let header_start = self.pos();
+                    f(self);
+                    let header_length = self.pos() - header_start;
+                    self.update_u16(header_length_pos, header_length.try_into().expect("header too long"));
+                    self.align_to(4);
+                }
+                FieldValue::Other(i) => self.update_u16(header_length_pos, i)
+            }
+
+            body(self);
+            let field_length = self.pos() - field_start;
+            self.update_u16(field_length_pos, field_length.try_into().expect("field is too long"));
+        }
+    }
+
+    impl<'a> BinaryWriter for VersionWriter<'a> {
+        fn pos(&self) -> usize {
+            self.0.pos()
+        }
+
+        fn reserve(&mut self, amount: usize) {
+            self.0.reserve(amount)
+        }
+
+        fn write_bytes(&mut self, data: &[u8]) {
+            self.0.write_bytes(data)
+        }
+
+        fn write_bytes_at(&mut self, index: usize, data: &[u8]) {
+            self.0.write_bytes_at(index, data)
+        }
+    }
+
 }

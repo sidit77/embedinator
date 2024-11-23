@@ -130,17 +130,17 @@ impl ResourceBuilder {
     pub fn compile(&self) -> ResourceFile {
         let mut res = ResourceFile(Vec::new());
 
-        res.write_resource2(ResourceType::None, 0, &()); // Files seem to start with an empty resource
-        res.write_version(FixedVersionInfo {
+        res.write_resource(ResourceType::None, 0, &()); // Files seem to start with an empty resource
+        res.write_resource(ResourceType::Version, 1, &FixedVersionInfo {
             file_version: [0, 1, 0, 0],
             product_version: [0, 1, 0, 0],
             file_flags: FileFlags::NONE,
         });
         for (id, icon) in &self.icons {
-            res.write_resource2(ResourceType::Icon, *id, icon);
+            res.write_resource(ResourceType::Icon, *id, icon);
         }
         for (id, entries) in &self.icon_groups {
-            res.write_resource2(ResourceType::IconGroup, *id, entries.as_slice());
+            res.write_resource(ResourceType::IconGroup, *id, entries.as_slice());
         }
         //if let Some(manifest) = &self.manifest {
         //    res.write_resource2(ResourceType::Manifest, 1, manifest.as_bytes());
