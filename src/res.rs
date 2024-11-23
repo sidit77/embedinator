@@ -24,7 +24,7 @@ impl ResourceFile {
         self.write_u16(id);
     }
 
-    pub fn write_resource<B: BinaryWritable +?Sized>(&mut self, ty: ResourceType, name: u16, data: &B) {
+    pub(crate) fn write_resource<B: BinaryWritable +?Sized>(&mut self, ty: ResourceType, name: u16, data: &B) {
         let header_start = self.pos();
         let data_size_loc = self.reserve_u32();
         let header_size_loc = self.reserve_u32();

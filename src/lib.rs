@@ -1,48 +1,13 @@
+use std::collections::{HashMap, HashSet};
 use crate::coff::{CoffWriter, TargetType};
-use std::ops::BitOr;
 
 mod res;
 mod coff;
 mod binary;
 
-pub struct FileFlags(u32);
-
-impl FileFlags {
-    pub const NONE: Self = Self(0x0);
-
-    /// The file contains debugging information or is compiled with debugging features enabled.
-    pub const DEBUG: Self = Self(0x01);
-
-    /// The file's version structure was created dynamically; therefore, some of the members in this structure may be empty or incorrect.
-    /// This flag should never be set in a file's VS_VERSIONINFO data.
-    pub const INFOINFERRED: Self = Self(0x10);
-
-    /// The file has been modified and is not identical to the original shipping file of the same version number.
-    pub const PATCHED: Self = Self(0x04);
-
-    /// The file is a development version, not a commercially released product.
-    pub const PRERELEASE: Self = Self(0x02);
-
-    /// The file was not built using standard release procedures.
-    /// If this flag is set, the StringFileInfo structure should contain a PrivateBuild entry.
-    pub const PRIVATEBUILD: Self = Self(0x08);
-
-    /// The file was built by the original company using standard release procedures but is a variation of the normal file of the same version number.
-    /// If this flag is set, the StringFileInfo structure should contain a SpecialBuild entry.
-    pub const SPECIALBUILD: Self = Self(0x20);
-}
-
-impl BitOr for FileFlags {
-    type Output = FileFlags;
-
-    fn bitor(self, rhs: Self) -> Self::Output {
-        Self(self.0 | rhs.0)
-    }
-}
-
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 #[repr(u16)]
-pub enum ResourceType {
+pub(crate) enum ResourceType {
     None = 0x0,
     Version = 0x10,
     Icon = 0x3,
@@ -70,10 +35,73 @@ impl ResourceType {
 
 }
 
-pub struct FixedVersionInfo {
-    file_version: [u16; 4],
-    product_version: [u16; 4],
-    file_flags: FileFlags
+#[derive(Default, Debug, Copy, Clone, Eq, PartialEq)]
+#[repr(u8)]
+pub enum FileType {
+    #[default]
+    Exe = 1,
+    Dll = 2
+}
+
+#[derive(Default, Debug, Copy, Clone, Eq, PartialEq)]
+pub struct Version {
+    pub major: u16,
+    pub minor: u16,
+    pub patch: u16,
+    pub build: u16
+}
+
+impl Version {
+    pub fn new(major: u16, minor: u16, patch: u16, build: u16) -> Self {
+        Self { major, minor, patch, build }
+    }
+}
+
+/// Flags that indicate the file's status.
+/// See https://learn.microsoft.com/en-us/windows/win32/api/verrsrc/ns-verrsrc-vs_fixedfileinfo
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[repr(u8)]
+pub enum FileFlag {
+    /// The file contains debugging information or is compiled with debugging features enabled.
+    Debug = 0x01,
+    /// The file has been modified and is not identical to the original shipping file of the same version number.
+    Patched = 0x04,
+    /// The file is a development version, not a commercially released product.
+    Prerelease = 0x02,
+    /// The file was not built using standard release procedures.
+    /// If this flag is set, the `VersionInfo` structure should contain a *PrivateBuild* entry.
+    PrivateBuild = 0x08,
+    /// The file was built by the original company using standard release procedures but is a variation of the normal file of the same version number.
+    /// If this flag is set, the `VersionInfo` structure should contain a *SpecialBuild* entry.
+    SpecialBuild = 0x20
+
+    //InfoInferred,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct VersionInfo {
+    pub file_version: Version,
+    pub product_version: Version,
+    pub file_type: FileType,
+    pub flags: HashSet<FileFlag>,
+    pub strings: HashMap<String, String>,
+}
+
+impl Default for VersionInfo {
+    fn default() -> Self {
+        Self {
+            file_version: Version::new(0, 1, 0, 0),
+            product_version: Version::new(0, 1, 0, 0),
+            file_type: FileType::Exe,
+            flags: HashSet::new(),
+            strings: HashMap::from([
+                (String::from("ProductVersion"), String::from("0.1.0")),
+                (String::from("FileVersion"), String::from("0.1.0")),
+                (String::from("ProductName"), String::from("rusty-twinkle-tray")),
+                (String::from("FileDescription"), String::from("rusty-twinkle-tray"))
+            ]),
+        }
+    }
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -102,6 +130,7 @@ struct IconGroupEntry {
 
 #[derive(Default, Clone)]
 pub struct ResourceBuilder {
+    version: VersionInfo,
     icon_groups: Vec<(u16, [IconGroupEntry; 1])>,
     icons: Vec<(u16, Icon)>,
     manifest: Option<String>
@@ -131,20 +160,16 @@ impl ResourceBuilder {
         let mut res = ResourceFile(Vec::new());
 
         res.write_resource(ResourceType::None, 0, &()); // Files seem to start with an empty resource
-        res.write_resource(ResourceType::Version, 1, &FixedVersionInfo {
-            file_version: [0, 1, 0, 0],
-            product_version: [0, 1, 0, 0],
-            file_flags: FileFlags::NONE,
-        });
+        res.write_resource(ResourceType::Version, 1, &self.version);
         for (id, icon) in &self.icons {
             res.write_resource(ResourceType::Icon, *id, icon);
         }
         for (id, entries) in &self.icon_groups {
             res.write_resource(ResourceType::IconGroup, *id, entries.as_slice());
         }
-        //if let Some(manifest) = &self.manifest {
-        //    res.write_resource2(ResourceType::Manifest, 1, manifest.as_bytes());
-        //}
+        if let Some(manifest) = &self.manifest {
+            res.write_resource(ResourceType::Manifest, 1, manifest.as_bytes());
+        }
         res
     }
 

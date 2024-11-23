@@ -1,5 +1,5 @@
 use crate::binary::version::{FieldType, FieldValue};
-use crate::{FixedVersionInfo, Icon, IconGroupEntry};
+use crate::{Icon, IconGroupEntry, Version, VersionInfo};
 
 pub trait BinaryWriter {
 
@@ -124,7 +124,16 @@ impl BinaryWritable for () {
     }
 }
 
-impl BinaryWritable for FixedVersionInfo {
+impl BinaryWritable for Version {
+    fn write_to<W: BinaryWriter>(&self, w: &mut W) {
+        w.write_u16(self.minor);
+        w.write_u16(self.major);
+        w.write_u16(self.build);
+        w.write_u16(self.patch);
+    }
+}
+
+impl BinaryWritable for VersionInfo {
     fn write_to<W: BinaryWriter>(&self, writer: &mut W) {
         let mut w = version::VersionWriter(writer);
         // https://learn.microsoft.com/en-us/windows/win32/menurc/vs-versioninfo
@@ -133,37 +142,23 @@ impl BinaryWritable for FixedVersionInfo {
             w.write_u32(0xFEEF04BD); //magic number
             w.write_u32(1 << 16); // struct version
 
-            w.write_u16(self.file_version[1]);
-            w.write_u16(self.file_version[0]);
-            w.write_u16(self.file_version[3]);
-            w.write_u16(self.file_version[2]);
-
-            w.write_u16(self.product_version[1]);
-            w.write_u16(self.product_version[0]);
-            w.write_u16(self.product_version[3]);
-            w.write_u16(self.product_version[2]);
+            self.file_version.write_to(w);
+            self.product_version.write_to(w);
 
             w.write_u32(0x3f); // fileflagsmask
-            w.write_u32(self.file_flags.0);
+            w.write_u32(self.flags.iter().fold(0, |acc, f| acc | *f as u32));
             w.write_u32(0x00040004); // VOS_NT_WINDOWS32
-            w.write_u32(0x00000001); // VFT_APP
+            w.write_u32(self.file_type as u32); // VFT_APP
             w.write_u32(0x0);
 
             w.write_u32(0x0); //Timestamp
             w.write_u32(0x0);
-        }),
-        |w| {
+        }), |w| {
             // https://learn.microsoft.com/en-us/windows/win32/menurc/stringfileinfo
             w.write_field(FieldType::Text, "StringFileInfo", FieldValue::none(), |w| {
                 // https://learn.microsoft.com/en-us/windows/win32/menurc/stringtable
                 w.write_field(FieldType::Text, "000004b0", FieldValue::none(), |w| {
-                    let fields = [
-                        ("ProductVersion", "0.1.0"),
-                        ("FileVersion", "0.1.0"),
-                        ("ProductName", "rusty-twinkle-tray"),
-                        ("FileDescription", "rusty-twinkle-tray")
-                    ];
-                    for (k, v) in fields {
+                    for (k, v) in &self.strings {
                         let l = u16::try_from(v.encode_utf16().count() + 1).expect("Key too long");
                         // https://learn.microsoft.com/en-us/windows/win32/menurc/string-str
                         w.write_field(FieldType::Text, k, FieldValue::other(l), |w| w.write_utf16(v));
