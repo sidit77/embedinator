@@ -1,8 +1,10 @@
 use std::collections::{HashMap, HashSet};
+use std::env::var;
 use std::path::Path;
 use crate::coff::{CoffWriter};
 use crate::res::ResWriter;
 
+#[doc(hidden)]
 pub use crate::coff::TargetType;
 
 mod res;
@@ -62,7 +64,7 @@ impl Version {
 }
 
 /// Flags that indicate the file's status.
-/// See https://learn.microsoft.com/en-us/windows/win32/api/verrsrc/ns-verrsrc-vs_fixedfileinfo
+/// See <https://learn.microsoft.com/en-us/windows/win32/api/verrsrc/ns-verrsrc-vs_fixedfileinfo>
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 #[repr(u8)]
 pub enum FileFlag {
@@ -82,8 +84,8 @@ pub enum FileFlag {
     //InfoInferred,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct VersionInfo {
+#[derive(Default, Debug, Clone, Eq, PartialEq)]
+struct VersionInfo {
     pub file_version: Version,
     pub product_version: Version,
     pub file_type: FileType,
@@ -91,6 +93,7 @@ pub struct VersionInfo {
     pub strings: HashMap<String, String>,
 }
 
+/*
 impl Default for VersionInfo {
     fn default() -> Self {
         Self {
@@ -107,6 +110,7 @@ impl Default for VersionInfo {
         }
     }
 }
+ */
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct Icon(Vec<u8>);
@@ -142,6 +146,71 @@ pub struct ResourceBuilder {
 
 impl ResourceBuilder {
 
+    pub fn from_evn() -> Self {
+        println!("cargo:rerun-if-env-changed=CARGO_PKG_VERSION_MAJOR");
+        println!("cargo:rerun-if-env-changed=CARGO_PKG_VERSION_MINOR");
+        println!("cargo:rerun-if-env-changed=CARGO_PKG_VERSION_PATCH");
+        println!("cargo:rerun-if-env-changed=CARGO_PKG_VERSION");
+        println!("cargo:rerun-if-env-changed=CARGO_PKG_NAME");
+        println!("cargo:rerun-if-env-changed=CARGO_PKG_DESCRIPTION");
+
+
+        let version = Version {
+            major: var("CARGO_PKG_VERSION_MAJOR")
+                .expect("No CARGO_PKG_VERSION_MAJOR env var")
+                .parse()
+                .unwrap_or(0),
+            minor: var("CARGO_PKG_VERSION_MINOR")
+                .expect("No CARGO_PKG_VERSION_MINOR env var")
+                .parse()
+                .unwrap_or(0),
+            patch: var("CARGO_PKG_VERSION_PATCH")
+                .expect("No CARGO_PKG_VERSION_PATCH env var")
+                .parse()
+                .unwrap_or(0),
+            build: 0,
+        };
+        Self::default()
+            .set_file_version(version)
+            .set_product_version(version)
+            .add_string("FileVersion", var("CARGO_PKG_VERSION")
+                .expect("No CARGO_PKG_VERSION env var"))
+            .add_string("ProductVersion", var("CARGO_PKG_VERSION")
+                .expect("No CARGO_PKG_VERSION env var"))
+            .add_string("ProductName", var("CARGO_PKG_NAME")
+                .expect("No CARGO_PKG_NAME env var"))
+            .add_string("FileDescription", var("CARGO_PKG_DESCRIPTION")
+                .ok()
+                .filter(|d| !d.is_empty())
+                .or_else(|| var("CARGO_PKG_NAME").ok())
+                .expect("No CARGO_PKG_DESCRIPTION or CARGO_PKG_NAME env var"))
+    }
+
+    pub fn set_file_version(mut self, version: Version) -> Self {
+        self.version.file_version = version;
+        self
+    }
+
+    pub fn set_product_version(mut self, version: Version) -> Self {
+        self.version.product_version = version;
+        self
+    }
+
+    pub fn set_file_type(mut self, file_type: FileType) -> Self {
+        self.version.file_type = file_type;
+        self
+    }
+
+    pub fn add_file_flags(mut self, flags: impl IntoIterator<Item=FileFlag>) -> Self {
+        self.version.flags.extend(flags);
+        self
+    }
+
+    pub fn add_string<K: Into<String>, V: Into<String>>(mut self, key: K, value: V) -> Self {
+        self.version.strings.insert(key.into(), value.into());
+        self
+    }
+
     pub fn add_manifest<S: Into<String>>(mut self, manifest: S) -> Self {
         assert!(self.manifest.is_none(), "Manifest already set");
         self.manifest = Some(manifest.into());
@@ -160,6 +229,7 @@ impl ResourceBuilder {
         self
     }
 
+    #[doc(hidden)]
     pub fn compile_to_res(&self) -> ResourceFile {
         let mut res = ResWriter::default();
 
@@ -180,7 +250,8 @@ impl ResourceBuilder {
         }
     }
 
-    pub fn compile_to_coff(self, target: TargetType) -> ResourceFile {
+    #[doc(hidden)]
+    pub fn compile_to_coff(&self, target: TargetType) -> ResourceFile {
         let mut coff = CoffWriter::new(target);
 
         const LANG_US: u32 = 0x0409;
@@ -259,7 +330,7 @@ impl ResourceBuilder {
     }
 
     pub fn finish(self) {
-        let target = std::env::var("CARGO_CFG_TARGET_ARCH")
+        let target = var("CARGO_CFG_TARGET_ARCH")
             .expect("No CARGO_CFG_TARGET_ARCH env var");
         let target = match target.as_str() {
             "x86_64" => TargetType::X86_64,
@@ -267,43 +338,39 @@ impl ResourceBuilder {
             "aarch64" => TargetType::Aarch64,
             _ => panic!("Unsupported target arch")
         };
-        self
-            .compile_to_coff(target)
-            .save_and_link()
-            .expect("Failed to save and link resources");
+
+        let out_dir = var("OUT_DIR")
+            .expect("No OUT_DIR env var");
+        let out_file = format!("{out_dir}/resources.lib");
+
+        self.compile_to_coff(target)
+            .write_to_file(&out_file)
+            .expect("Failed to write resource file");
+
+        println!("cargo:rustc-link-arg-bins={}", &out_file);
     }
 
 }
 
+#[doc(hidden)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-enum ResourceFileKind {
+pub enum ResourceFileKind {
     Coff,
     Res
 }
 
+#[doc(hidden)]
 #[must_use]
 #[derive(Clone, Eq, PartialEq)]
 pub struct ResourceFile {
-    data: Vec<u8>,
-    kind: ResourceFileKind
+    pub data: Vec<u8>,
+    pub kind: ResourceFileKind
 }
 
 impl ResourceFile {
 
     pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
         std::fs::write(path, &self.data)
-    }
-
-    pub fn save_and_link(&self) -> std::io::Result<()> {
-        let out_dir = std::env::var("OUT_DIR")
-            .expect("No OUT_DIR env var");
-        let out_file = format!("{out_dir}/resources.{}", match self.kind {
-            ResourceFileKind::Coff => "lib",
-            ResourceFileKind::Res => "res"
-        });
-        std::fs::write(&out_file, &self.data)?;
-        println!("cargo:rustc-link-arg-bins={}", &out_file);
-        Ok(())
     }
 
 }
