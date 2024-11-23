@@ -1,7 +1,6 @@
 use std::iter::repeat_n;
 use crate::{FixedVersionInfo, Icon, IconGroupEntry, ResourceFile, ResourceType};
-
-
+use crate::binary::{BinaryWritable, BinaryWriter};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 #[repr(u16)]
@@ -32,23 +31,11 @@ impl FieldValue<fn(&mut ResourceFile)> {
     }
 }
 
+
 impl ResourceFile {
 
-    fn write_u32(&mut self, v: u32) {
-        self.0.extend_from_slice(&v.to_le_bytes())
-    }
-
-    fn write_u16(&mut self, v: u16) {
-        self.0.extend_from_slice(&v.to_le_bytes())
-    }
-
-    fn write_u8(&mut self, v: u8) {
-        self.0.push(v)
-    }
-
     fn realign(&mut self) {
-        let required_padding = (4 - (self.pos() & 0b11)) & 0b11;
-        self.0.extend(repeat_n(0, required_padding))
+        self.align_to(4)
     }
 
     fn reserve_u32(&mut self) -> usize {
@@ -58,7 +45,7 @@ impl ResourceFile {
     }
 
     fn update_u32(&mut self, location: usize, v: u32) {
-        self.0[location..(location + size_of::<u32>())].copy_from_slice(&v.to_le_bytes())
+        self.write_bytes_at(location, &v.to_le_bytes())
     }
 
     fn reserve_u16(&mut self) -> usize {
@@ -68,7 +55,7 @@ impl ResourceFile {
     }
 
     fn update_u16(&mut self, location: usize, v: u16) {
-        self.0[location..(location + size_of::<u16>())].copy_from_slice(&v.to_le_bytes())
+        self.write_bytes_at(location, &v.to_le_bytes())
     }
 
     fn write_ident(&mut self, id: u16) {
@@ -81,10 +68,6 @@ impl ResourceFile {
             self.write_u16(c);
         }
         self.write_u16(0x0);
-    }
-
-    fn pos(&self) -> usize {
-        self.0.len()
     }
 
     fn write_resource<F: FnOnce(&mut Self)>(&mut self, ty: ResourceType, name: u16, writer: F) {
@@ -112,8 +95,30 @@ impl ResourceFile {
         self.realign();
     }
 
-    pub(crate) fn write_empty(&mut self) {
-        self.write_resource(ResourceType::None, 0, |_| {})
+
+    pub fn write_resource2<B: BinaryWritable +?Sized>(&mut self, ty: ResourceType, name: u16, data: &B) {
+        let header_start = self.pos();
+        let data_size_loc = self.reserve_u32();
+        let header_size_loc = self.reserve_u32();
+        self.write_ident(ty as u16);
+        self.write_ident(name);
+        self.realign();
+        self.write_u32(0); // format version
+        self.write_u16(ty.flags());
+        self.write_u16(match ty {
+            ResourceType::None => 0x0,
+            _ => 0x0409 // en-US
+        });
+        self.write_u32(0); // data version
+        self.write_u32(0); // characteristics
+
+        let header_len = self.pos() - header_start;
+        self.update_u32(header_size_loc, header_len as u32);
+        let data_start = self.pos();
+        data.write_to(self);
+        let data_len = self.pos() - data_start;
+        self.update_u32(data_size_loc, data_len as u32);
+        self.realign();
     }
 
     fn write_field<F: FnOnce(&mut Self), B: FnOnce(&mut Self)>(&mut self, field_type: FieldType, key: &str, value: FieldValue<F>, body: B) {
@@ -199,30 +204,22 @@ impl ResourceFile {
         self.realign();
     }
 
-    pub(crate) fn write_icon_group(&mut self, id: u16, entries: &[IconGroupEntry]) {
-        self.write_resource(ResourceType::IconGroup, id, |w| {
-            // it doesn't seems to matter what we write for most of these fields
-            w.write_u16(0x0); // idReserved
-            w.write_u16(0x1); // idType
-            w.write_u16(entries.len().try_into().expect("Too many icons in group")); // idCount
+}
 
-            for entry in entries {
-                w.write_u8(0x0); // bWidth
-                w.write_u8(0x0); // bHeight
-                w.write_u8(0x0); // bColorCount
-                w.write_u8(0x0); // bReserved
-                w.write_u16(0x1); // wPlanes
-                w.write_u16(32); // wBitCount
-                w.write_u32(entry.icon_size.try_into().expect("icon file too large")); // dwBytesInRes
-                w.write_u16(entry.icon_id);
-            }
-        });
+impl BinaryWriter for ResourceFile {
+    fn pos(&self) -> usize {
+        self.0.len()
     }
 
-    pub(crate) fn write_icon(&mut self, id: u16, icon: &Icon) {
-        self.write_resource(ResourceType::Icon, id, |w| {
-            w.0.extend_from_slice(&icon.0);
-        });
+    fn reserve(&mut self, amount: usize) {
+        self.0.extend(repeat_n(0, amount))
     }
 
+    fn write_bytes(&mut self, data: &[u8]) {
+        self.0.extend_from_slice(data)
+    }
+
+    fn write_bytes_at(&mut self, index: usize, data: &[u8]) {
+        self.0[index..(index + data.len())].copy_from_slice(data)
+    }
 }

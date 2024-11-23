@@ -1,8 +1,9 @@
-use crate::coff::{CoffWriter, IconGroupWriter, TargetType};
+use crate::coff::{CoffWriter, TargetType};
 use std::ops::BitOr;
 
-mod writing;
+mod res;
 mod coff;
+mod binary;
 
 pub struct FileFlags(u32);
 
@@ -129,18 +130,21 @@ impl ResourceBuilder {
     pub fn compile(&self) -> ResourceFile {
         let mut res = ResourceFile(Vec::new());
 
-        res.write_empty(); // Files seem to start with an empty resource
+        res.write_resource2(ResourceType::None, 0, &()); // Files seem to start with an empty resource
         res.write_version(FixedVersionInfo {
             file_version: [0, 1, 0, 0],
             product_version: [0, 1, 0, 0],
             file_flags: FileFlags::NONE,
         });
         for (id, icon) in &self.icons {
-            res.write_icon(*id, icon);
+            res.write_resource2(ResourceType::Icon, *id, icon);
         }
         for (id, entries) in &self.icon_groups {
-            res.write_icon_group(*id, entries)
+            res.write_resource2(ResourceType::IconGroup, *id, entries.as_slice());
         }
+        //if let Some(manifest) = &self.manifest {
+        //    res.write_resource2(ResourceType::Manifest, 1, manifest.as_bytes());
+        //}
         res
     }
 
@@ -203,10 +207,10 @@ impl ResourceBuilder {
                 next_entry().write_data(&mut coff, manifest.as_bytes());
             }
             for (_, icon) in &self.icons {
-                next_entry().write_data(&mut coff, &icon.0);
+                next_entry().write_data(&mut coff, icon);
             }
             for (_, group) in &self.icon_groups {
-                next_entry().write_data(&mut coff, &IconGroupWriter(group));
+                next_entry().write_data(&mut coff, group.as_slice());
             }
         }
 
@@ -230,7 +234,7 @@ pub struct ResourceFile(Vec<u8>);
 impl ResourceFile {
 
     pub fn write_to_file(&self) -> std::io::Result<()> {
-        std::fs::write("test.lib", &self.0)
+        std::fs::write("test.res", &self.0)
     }
 
     pub fn save_and_link(&self) -> std::io::Result<()> {
