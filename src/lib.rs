@@ -10,8 +10,9 @@ pub use crate::coff::TargetType;
 mod res;
 mod coff;
 mod binary;
+mod coff2;
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 #[repr(u16)]
 pub(crate) enum ResourceType {
     None = 0x0,
@@ -19,6 +20,12 @@ pub(crate) enum ResourceType {
     Icon = 0x3,
     IconGroup = 0xE,
     Manifest = 0x18
+}
+
+impl From<ResourceType> for u32 {
+    fn from(value: ResourceType) -> Self {
+        value as u32
+    }
 }
 
 impl ResourceType {
@@ -252,6 +259,26 @@ impl ResourceBuilder {
         }
     }
 
+    pub fn compile_to_coff2(&self, target: TargetType) -> ResourceFile {
+        let mut writer = coff2::CoffWriter2::new(target);
+
+        writer.add_resource(ResourceType::Version, 1, &self.version);
+        for (id, icon) in &self.icons {
+            writer.add_resource(ResourceType::Icon, *id as u32, icon);
+        }
+        for (id, entries) in &self.icon_groups {
+            writer.add_resource(ResourceType::IconGroup, *id as u32, entries.as_slice());
+        }
+        if let Some(manifest) = &self.manifest {
+            writer.add_resource(ResourceType::Manifest, 1, manifest.as_bytes());
+        }
+
+        ResourceFile {
+            data: writer.finish(),
+            kind: ResourceFileKind::Coff
+        }
+    }
+
     #[doc(hidden)]
     pub fn compile_to_coff(&self, target: TargetType) -> ResourceFile {
         let mut coff = CoffWriter::new(target);
@@ -272,13 +299,7 @@ impl ResourceBuilder {
                 .data_entry(&mut coff, LANG_US);
             data_entries.push(entry);
         }
-        if self.manifest.is_some() {
-            let entry = res_dir
-                .subdirectory(&mut coff, ResourceType::Manifest as u32, 1)
-                .subdirectory(&mut coff, 1, 1)
-                .data_entry(&mut coff, LANG_US);
-            data_entries.push(entry);
-        }
+
 
         if self.icons.len() > 0 {
             let mut icon_dir = res_dir
@@ -300,6 +321,13 @@ impl ResourceBuilder {
                 data_entries.push(entry);
             }
         }
+        if self.manifest.is_some() {
+            let entry = res_dir
+                .subdirectory(&mut coff, ResourceType::Manifest as u32, 1)
+                .subdirectory(&mut coff, 1, 1)
+                .data_entry(&mut coff, LANG_US);
+            data_entries.push(entry);
+        }
 
 
         {
@@ -307,16 +335,15 @@ impl ResourceBuilder {
             let mut next_entry = move || next_entry.next().expect("not enough data entries");
 
             next_entry().write_data(&mut coff, &self.version);
-            if let Some(manifest) = &self.manifest {
-                next_entry().write_data(&mut coff, manifest.as_bytes());
-            }
             for (_, icon) in &self.icons {
                 next_entry().write_data(&mut coff, icon);
             }
             for (_, group) in &self.icon_groups {
                 next_entry().write_data(&mut coff, group.as_slice());
             }
-
+            if let Some(manifest) = &self.manifest {
+                next_entry().write_data(&mut coff, manifest.as_bytes());
+            }
         }
 
         {
@@ -335,7 +362,7 @@ impl ResourceBuilder {
     pub fn finish(self) {
         let target = var("CARGO_CFG_TARGET_ARCH")
             .expect("No CARGO_CFG_TARGET_ARCH env var");
-        let _target = match target.as_str() {
+        let target = match target.as_str() {
             "x86_64" => TargetType::X86_64,
             "x86" => TargetType::I386,
             "aarch64" => TargetType::Aarch64,
@@ -347,7 +374,8 @@ impl ResourceBuilder {
         let out_file = format!("{out_dir}/resources.lib");
 
         // COFF doesn't seem to work, idk why
-        self.compile_to_res()
+        //self.compile_to_res()
+        self.compile_to_coff2(target)
             .write_to_file(&out_file)
             .expect("Failed to write resource file");
 

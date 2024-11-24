@@ -10,7 +10,7 @@ pub enum TargetType {
 }
 
 impl TargetType {
-    fn id(self) -> u16 {
+    pub(crate) fn id(self) -> u16 {
         match self {
             TargetType::Aarch64 => 0xaa64,
             TargetType::I386 => 0x014c,
