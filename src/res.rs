@@ -1,12 +1,12 @@
 use std::iter::repeat_n;
-use crate::ResourceType;
+
 use crate::binary::{BinaryWritable, BinaryWriter};
+use crate::ResourceType;
 
 #[derive(Default)]
 pub struct ResWriter(Vec<u8>);
 
 impl ResWriter {
-
     pub fn finish(self) -> Vec<u8> {
         self.0
     }
@@ -30,7 +30,7 @@ impl ResWriter {
         self.write_u16(id);
     }
 
-    pub fn write_resource<B: BinaryWritable +?Sized>(&mut self, ty: ResourceType, name: u16, data: &B) {
+    pub fn write_resource<B: BinaryWritable + ?Sized>(&mut self, ty: ResourceType, name: u16, data: &B) {
         let header_start = self.pos();
         let data_size_loc = self.reserve_u32();
         let header_size_loc = self.reserve_u32();
@@ -54,7 +54,6 @@ impl ResWriter {
         self.update_u32(data_size_loc, data_len as u32);
         self.realign();
     }
-
 }
 
 impl BinaryWriter for ResWriter {

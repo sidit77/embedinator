@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::SystemTime;
+
 use crate::binary::{BinaryWritable, BinaryWriter};
-use crate::{ResourceType};
+use crate::ResourceType;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum TargetType {
@@ -16,18 +17,17 @@ impl TargetType {
         match self {
             TargetType::Aarch64 => 0xaa64,
             TargetType::I386 => 0x014c,
-            TargetType::X86_64 => 0x8664,
+            TargetType::X86_64 => 0x8664
         }
     }
 }
-
 
 struct Section {
     name: [u8; 8],
     pointer_to_raw_data: usize,
     size_of_raw_data: usize,
     pointer_to_relocations: usize,
-    number_of_relocations: usize,
+    number_of_relocations: usize
 }
 
 #[derive(Default, Copy, Clone)]
@@ -36,7 +36,7 @@ enum Symbol {
     Placeholder,
     Section {
         name: [u8; 8],
-        section_number: u16,
+        section_number: u16
     },
     SectionAux {
         length: u32,
@@ -45,7 +45,7 @@ enum Symbol {
     Resource {
         name: [u8; 8],
         offset: u32,
-        section_number: u16,
+        section_number: u16
     }
 }
 
@@ -53,7 +53,7 @@ pub struct CoffWriter {
     target_type: TargetType,
     table: BTreeMap<ResourceType, BTreeMap<ResourceId, BTreeMap<LanguageId, ResourceLocation>>>,
     data: FileWriter,
-    symbols: Vec<Symbol>,
+    symbols: Vec<Symbol>
 }
 
 impl CoffWriter {
@@ -65,7 +65,7 @@ impl CoffWriter {
             target_type,
             table: Default::default(),
             data: Default::default(),
-            symbols: vec![Symbol::default(); 4],
+            symbols: vec![Symbol::default(); 4]
         }
     }
 
@@ -77,10 +77,13 @@ impl CoffWriter {
         };
         self.data.align_to(8);
         let mut name = [0u8; 8];
-        write!(name.as_mut_slice(), "$R{:06X}", offset)
-            .expect("Failed to generate symbol name");
+        write!(name.as_mut_slice(), "$R{:06X}", offset).expect("Failed to generate symbol name");
         let symbol_id = self.symbols.len();
-        self.symbols.push(Symbol::Resource { name, offset: offset as u32, section_number: 2 });
+        self.symbols.push(Symbol::Resource {
+            name,
+            offset: offset as u32,
+            section_number: 2
+        });
 
         self.table
             .entry(ty)
@@ -89,7 +92,6 @@ impl CoffWriter {
             .or_default()
             .insert(LanguageId::LANG_US, ResourceLocation { offset, size, symbol_id });
     }
-
 
     fn write_symbol_table(&mut self, file: &mut FileWriter) -> (usize, usize) {
         file.align_to(4);
@@ -106,13 +108,20 @@ impl CoffWriter {
                     file.write_u8(IMAGE_SYM_CLASS_STATIC); // Storage class
                     file.write_u8(1); // Number of auxiliary symbols
                 }
-                Symbol::SectionAux { length, number_of_relocations } => {
+                Symbol::SectionAux {
+                    length,
+                    number_of_relocations
+                } => {
                     file.write_u32(length); // Length
                     file.write_u16(number_of_relocations); // Number of relocations
                     file.write_u16(0); // Number of lines
                     file.reserve(10); // Checksum, Number, Selection, Unused
                 }
-                Symbol::Resource { name, section_number, offset } => {
+                Symbol::Resource {
+                    name,
+                    section_number,
+                    offset
+                } => {
                     file.write_bytes(&name); // Name
                     file.write_u32(offset); // Value
                     file.write_u16(section_number); // Section number
@@ -130,7 +139,6 @@ impl CoffWriter {
     fn write_table_section(&mut self, file: &mut FileWriter) -> Section {
         file.mark_section_start();
         let pointer_to_raw_data = file.pos();
-
 
         let mut relocations = Vec::new();
 
@@ -165,7 +173,7 @@ impl CoffWriter {
             pointer_to_raw_data,
             size_of_raw_data,
             pointer_to_relocations,
-            number_of_relocations,
+            number_of_relocations
         }
     }
 
@@ -180,7 +188,7 @@ impl CoffWriter {
             pointer_to_raw_data,
             size_of_raw_data,
             pointer_to_relocations: 0,
-            number_of_relocations: 0,
+            number_of_relocations: 0
         }
     }
 
@@ -190,19 +198,19 @@ impl CoffWriter {
 
         self.symbols[Self::TABLE_SYMBOL] = Symbol::Section {
             name: table_section.name,
-            section_number: 1,
+            section_number: 1
         };
         self.symbols[Self::TABLE_SYMBOL + 1] = Symbol::SectionAux {
             length: table_section.size_of_raw_data as u32,
-            number_of_relocations: table_section.number_of_relocations as u16,
+            number_of_relocations: table_section.number_of_relocations as u16
         };
         self.symbols[Self::DATA_SYMBOL] = Symbol::Section {
             name: data_section.name,
-            section_number: 2,
+            section_number: 2
         };
         self.symbols[Self::DATA_SYMBOL + 1] = Symbol::SectionAux {
             length: data_section.size_of_raw_data as u32,
-            number_of_relocations: data_section.number_of_relocations as u16,
+            number_of_relocations: data_section.number_of_relocations as u16
         };
         [table_section, data_section]
     }
@@ -248,9 +256,10 @@ impl CoffWriter {
 }
 
 impl FileWriter {
-
     pub fn write_table<K, V, F>(&mut self, table: &BTreeMap<K, V>, mut write_entry: F)
-    where K: Copy + Into<u32>, F: FnMut(&mut Self, &V) -> bool
+    where
+        K: Copy + Into<u32>,
+        F: FnMut(&mut Self, &V) -> bool
     {
         self.write_u32(0); // Characteristics
         self.write_u32(0); // TimeDateStamp
@@ -271,7 +280,6 @@ impl FileWriter {
         }
         self.set_pos(frontier);
     }
-
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
@@ -311,7 +319,6 @@ enum RelocationType {
 }
 
 impl RelocationType {
-
     pub fn id(self, target: TargetType) -> u16 {
         const IMAGE_REL_AMD64_ADDR32NB: u16 = 0x0003;
         const IMAGE_REL_ARM64_ADDR32NB: u16 = 0x0002;
@@ -324,18 +331,16 @@ impl RelocationType {
             }
         }
     }
-
 }
 
 #[derive(Default)]
 pub struct FileWriter {
     data: Vec<u8>,
     current_position: usize,
-    section_start: usize,
+    section_start: usize
 }
 
 impl FileWriter {
-
     pub fn set_pos(&mut self, pos: usize) {
         self.current_position = pos;
     }
@@ -347,7 +352,6 @@ impl FileWriter {
     pub fn current_offset(&self) -> usize {
         self.current_position - self.section_start
     }
-
 }
 
 impl BinaryWriter for FileWriter {

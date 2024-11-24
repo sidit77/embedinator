@@ -17,19 +17,18 @@
 //!  # Limitations
 //!  Currently always sets the language to 0x0409 (English, US) as I don't fully understand how multilingual resource files are supposed to look like.
 
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::env::var;
 use std::path::Path;
-use crate::coff::CoffWriter;
-use crate::res::ResWriter;
 
+use crate::coff::CoffWriter;
 #[doc(hidden)]
 pub use crate::coff::TargetType;
+use crate::res::ResWriter;
 
-mod res;
 mod binary;
 mod coff;
+mod res;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 #[repr(u16)]
@@ -48,13 +47,12 @@ impl From<ResourceType> for u32 {
 }
 
 impl ResourceType {
-
     fn flags(self) -> u16 {
         const MOVEABLE: u16 = 0x0010;
-        const PURE : u16 = 0x0020;
+        const PURE: u16 = 0x0020;
         #[allow(dead_code)]
-        const PRELOAD : u16 = 0x0040;
-        const DISCARDABLE : u16 = 0x1000;
+        const PRELOAD: u16 = 0x0040;
+        const DISCARDABLE: u16 = 0x1000;
 
         match self {
             ResourceType::None => 0x0,
@@ -64,7 +62,6 @@ impl ResourceType {
             ResourceType::Manifest => MOVEABLE | PURE
         }
     }
-
 }
 
 /// The type of the file.
@@ -107,9 +104,7 @@ pub enum FileFlag {
     PrivateBuild = 0x08,
     /// The file was built by the original company using standard release procedures but is a variation of the normal file of the same version number.
     /// If this flag is set, the `VersionInfo` structure should contain a *SpecialBuild* entry.
-    SpecialBuild = 0x20
-
-    //InfoInferred,
+    SpecialBuild = 0x20 //InfoInferred,
 }
 
 #[derive(Default, Debug, Clone, Eq, PartialEq)]
@@ -118,7 +113,7 @@ struct VersionInfo {
     pub product_version: Version,
     pub file_type: FileType,
     pub flags: BTreeSet<FileFlag>,
-    pub strings: BTreeMap<String, String>,
+    pub strings: BTreeMap<String, String>
 }
 
 /// An Icon resource.
@@ -126,7 +121,6 @@ struct VersionInfo {
 pub struct Icon(Vec<u8>);
 
 impl Icon {
-
     /// Create an icon from a PNG file. The PNG must contain 32bpp RGBA data.
     /// Other icon format are not currently not supported, but could be added in the future
     pub fn from_png_bytes(data: Vec<u8>) -> Self {
@@ -139,7 +133,6 @@ impl Icon {
         assert_eq!((color_type, bit_depth), (6, 8), "The png must contain 32bpp RGBA data");
         Self(data)
     }
-
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -158,7 +151,6 @@ pub struct ResourceBuilder {
 }
 
 impl ResourceBuilder {
-
     /// Automatically fills many fields with values from environment variables set by cargo.
     pub fn from_env() -> Self {
         println!("cargo:rerun-if-env-changed=CARGO_PKG_VERSION_MAJOR");
@@ -167,7 +159,6 @@ impl ResourceBuilder {
         println!("cargo:rerun-if-env-changed=CARGO_PKG_VERSION");
         println!("cargo:rerun-if-env-changed=CARGO_PKG_NAME");
         println!("cargo:rerun-if-env-changed=CARGO_PKG_DESCRIPTION");
-
 
         let version = Version {
             major: var("CARGO_PKG_VERSION_MAJOR")
@@ -182,22 +173,22 @@ impl ResourceBuilder {
                 .expect("No CARGO_PKG_VERSION_PATCH env var")
                 .parse()
                 .unwrap_or(0),
-            build: 0,
+            build: 0
         };
         Self::default()
             .set_file_version(version)
             .set_product_version(version)
-            .add_string("FileVersion", var("CARGO_PKG_VERSION")
-                .expect("No CARGO_PKG_VERSION env var"))
-            .add_string("ProductVersion", var("CARGO_PKG_VERSION")
-                .expect("No CARGO_PKG_VERSION env var"))
-            .add_string("ProductName", var("CARGO_PKG_NAME")
-                .expect("No CARGO_PKG_NAME env var"))
-            .add_string("FileDescription", var("CARGO_PKG_DESCRIPTION")
-                .ok()
-                .filter(|d| !d.is_empty())
-                .or_else(|| var("CARGO_PKG_NAME").ok())
-                .expect("No CARGO_PKG_DESCRIPTION or CARGO_PKG_NAME env var"))
+            .add_string("FileVersion", var("CARGO_PKG_VERSION").expect("No CARGO_PKG_VERSION env var"))
+            .add_string("ProductVersion", var("CARGO_PKG_VERSION").expect("No CARGO_PKG_VERSION env var"))
+            .add_string("ProductName", var("CARGO_PKG_NAME").expect("No CARGO_PKG_NAME env var"))
+            .add_string(
+                "FileDescription",
+                var("CARGO_PKG_DESCRIPTION")
+                    .ok()
+                    .filter(|d| !d.is_empty())
+                    .or_else(|| var("CARGO_PKG_NAME").ok())
+                    .expect("No CARGO_PKG_DESCRIPTION or CARGO_PKG_NAME env var")
+            )
     }
 
     pub fn set_file_version(mut self, version: Version) -> Self {
@@ -215,7 +206,7 @@ impl ResourceBuilder {
         self
     }
 
-    pub fn add_file_flags(mut self, flags: impl IntoIterator<Item=FileFlag>) -> Self {
+    pub fn add_file_flags(mut self, flags: impl IntoIterator<Item = FileFlag>) -> Self {
         for flag in flags {
             self.version.flags.insert(flag);
         }
@@ -234,13 +225,16 @@ impl ResourceBuilder {
     }
 
     pub fn add_icon(mut self, id: u16, icon: Icon) -> Self {
-        assert!(!self.icon_groups.iter().any(|(i, _ )| *i == id), "Duplicate icon id");
+        assert!(!self.icon_groups.iter().any(|(i, _)| *i == id), "Duplicate icon id");
         const ICON_BASE_ID: u16 = 128;
         let icon_id = ICON_BASE_ID + self.icons.len() as u16;
-        self.icon_groups.push((id, [IconGroupEntry {
-            icon_id,
-            icon_size: icon.0.len(),
-        }]));
+        self.icon_groups.push((
+            id,
+            [IconGroupEntry {
+                icon_id,
+                icon_size: icon.0.len()
+            }]
+        ));
         self.icons.push((icon_id, icon));
         self
     }
@@ -260,7 +254,7 @@ impl ResourceBuilder {
         if let Some(manifest) = &self.manifest {
             res.write_resource(ResourceType::Manifest, 1, manifest.as_bytes());
         }
-        ResourceFile{
+        ResourceFile {
             data: res.finish(),
             kind: ResourceFileKind::Res
         }
@@ -288,8 +282,7 @@ impl ResourceBuilder {
     }
 
     pub fn finish(self) {
-        let target = var("CARGO_CFG_TARGET_ARCH")
-            .expect("No CARGO_CFG_TARGET_ARCH env var");
+        let target = var("CARGO_CFG_TARGET_ARCH").expect("No CARGO_CFG_TARGET_ARCH env var");
         let target = match target.as_str() {
             "x86_64" => TargetType::X86_64,
             "x86" => TargetType::I386,
@@ -297,8 +290,7 @@ impl ResourceBuilder {
             _ => panic!("Unsupported target arch")
         };
 
-        let out_dir = var("OUT_DIR")
-            .expect("No OUT_DIR env var");
+        let out_dir = var("OUT_DIR").expect("No OUT_DIR env var");
         let out_file = format!("{out_dir}/resources.lib");
 
         // COFF doesn't seem to work, idk why
@@ -309,7 +301,6 @@ impl ResourceBuilder {
 
         println!("cargo:rustc-link-arg-bins={}", &out_file);
     }
-
 }
 
 #[doc(hidden)]
@@ -328,9 +319,7 @@ pub struct ResourceFile {
 }
 
 impl ResourceFile {
-
     pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
         std::fs::write(path, &self.data)
     }
-
 }
