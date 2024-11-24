@@ -1,4 +1,4 @@
-use windows_resource_compiler::{Icon, ResourceBuilder, TargetType, Version};
+use windows_resource_compiler::{ResourceBuilder, TargetType, Version};
 
 fn main() {
     ResourceBuilder::default()

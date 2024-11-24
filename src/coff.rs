@@ -1,6 +1,8 @@
-use std::iter::repeat_n;
+use std::collections::BTreeMap;
+use std::io::Write;
 use std::time::SystemTime;
 use crate::binary::{BinaryWritable, BinaryWriter};
+use crate::{ResourceType};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum TargetType {
@@ -19,8 +21,292 @@ impl TargetType {
     }
 }
 
+
+struct Section {
+    name: [u8; 8],
+    pointer_to_raw_data: usize,
+    size_of_raw_data: usize,
+    pointer_to_relocations: usize,
+    number_of_relocations: usize,
+}
+
+#[derive(Default, Copy, Clone)]
+enum Symbol {
+    #[default]
+    Placeholder,
+    Section {
+        name: [u8; 8],
+        section_number: u16,
+    },
+    SectionAux {
+        length: u32,
+        number_of_relocations: u16
+    },
+    Resource {
+        name: [u8; 8],
+        offset: u32,
+        section_number: u16,
+    }
+}
+
+pub struct CoffWriter {
+    target_type: TargetType,
+    table: BTreeMap<ResourceType, BTreeMap<ResourceId, BTreeMap<LanguageId, ResourceLocation>>>,
+    data: FileWriter,
+    symbols: Vec<Symbol>,
+}
+
+impl CoffWriter {
+    const TABLE_SYMBOL: usize = 0;
+    const DATA_SYMBOL: usize = 2;
+
+    pub fn new(target_type: TargetType) -> Self {
+        Self {
+            target_type,
+            table: Default::default(),
+            data: Default::default(),
+            symbols: vec![Symbol::default(); 4],
+        }
+    }
+
+    pub fn add_resource<W: BinaryWritable + ?Sized>(&mut self, ty: ResourceType, id: u32, data: &W) {
+        let (offset, size) = {
+            let offset = self.data.pos();
+            data.write_to(&mut self.data);
+            (offset, self.data.pos() - offset)
+        };
+        self.data.align_to(8);
+        let mut name = [0u8; 8];
+        write!(name.as_mut_slice(), "$R{:06X}", offset)
+            .expect("Failed to generate symbol name");
+        let symbol_id = self.symbols.len();
+        self.symbols.push(Symbol::Resource { name, offset: offset as u32, section_number: 2 });
+
+        self.table
+            .entry(ty)
+            .or_default()
+            .entry(ResourceId(id))
+            .or_default()
+            .insert(LanguageId::LANG_US, ResourceLocation { offset, size, symbol_id });
+    }
+
+
+    fn write_symbol_table(&mut self, file: &mut FileWriter) -> (usize, usize) {
+        file.align_to(4);
+        let symbol_table_pointer = file.pos();
+
+        for symbol in &self.symbols {
+            match *symbol {
+                Symbol::Placeholder => panic!("Placeholder symbol not replaced"),
+                Symbol::Section { name, section_number } => {
+                    file.write_bytes(&name); // Name
+                    file.write_u32(0); // Value
+                    file.write_u16(section_number); // Section number
+                    file.write_u16(0); // Type
+                    file.write_u8(IMAGE_SYM_CLASS_STATIC); // Storage class
+                    file.write_u8(1); // Number of auxiliary symbols
+                }
+                Symbol::SectionAux { length, number_of_relocations } => {
+                    file.write_u32(length); // Length
+                    file.write_u16(number_of_relocations); // Number of relocations
+                    file.write_u16(0); // Number of lines
+                    file.reserve(10); // Checksum, Number, Selection, Unused
+                }
+                Symbol::Resource { name, section_number, offset } => {
+                    file.write_bytes(&name); // Name
+                    file.write_u32(offset); // Value
+                    file.write_u16(section_number); // Section number
+                    file.write_u16(0); // Type
+                    file.write_u8(IMAGE_SYM_CLASS_STATIC); // Storage class
+                    file.write_u8(0); // Number of auxiliary symbols
+                }
+            }
+        }
+        let number_of_symbols = self.symbols.len();
+
+        (symbol_table_pointer, number_of_symbols)
+    }
+
+    fn write_table_section(&mut self, file: &mut FileWriter) -> Section {
+        file.mark_section_start();
+        let pointer_to_raw_data = file.pos();
+
+
+        let mut relocations = Vec::new();
+
+        file.write_table(&self.table, |file, entry| {
+            file.write_table(entry, |file, entry| {
+                file.write_table(entry, |file, entry| {
+                    relocations.push((file.current_offset(), entry.symbol_id));
+                    file.write_u32(0); // Data RVA
+                    file.write_u32(entry.size as u32); // Size
+                    file.write_u32(0); // Code page
+                    file.write_u32(entry.size as u32); // Reserved
+                    false
+                });
+                true
+            });
+            true
+        });
+        file.align_to(4);
+        let size_of_raw_data = file.pos() - pointer_to_raw_data;
+        let pointer_to_relocations = file.pos();
+        let number_of_relocations = relocations.len();
+        relocations.sort_by_key(|&(_, symbol_id)| symbol_id);
+        for (rva, symbol_id) in relocations {
+            file.write_u32(rva as u32);
+            file.write_u32(symbol_id as u32);
+            file.write_u16(RelocationType::Rva32.id(self.target_type));
+        }
+        file.align_to(4);
+
+        Section {
+            name: *b".rsrc$01",
+            pointer_to_raw_data,
+            size_of_raw_data,
+            pointer_to_relocations,
+            number_of_relocations,
+        }
+    }
+
+    fn write_data_section(&mut self, file: &mut FileWriter) -> Section {
+        file.mark_section_start();
+        let pointer_to_raw_data = file.pos();
+        file.write_bytes(&self.data.data);
+        file.align_to(4);
+        let size_of_raw_data = file.pos() - pointer_to_raw_data;
+        Section {
+            name: *b".rsrc$02",
+            pointer_to_raw_data,
+            size_of_raw_data,
+            pointer_to_relocations: 0,
+            number_of_relocations: 0,
+        }
+    }
+
+    fn write_sections(&mut self, file: &mut FileWriter) -> [Section; 2] {
+        let table_section = self.write_table_section(file);
+        let data_section = self.write_data_section(file);
+
+        self.symbols[Self::TABLE_SYMBOL] = Symbol::Section {
+            name: table_section.name,
+            section_number: 1,
+        };
+        self.symbols[Self::TABLE_SYMBOL + 1] = Symbol::SectionAux {
+            length: table_section.size_of_raw_data as u32,
+            number_of_relocations: table_section.number_of_relocations as u16,
+        };
+        self.symbols[Self::DATA_SYMBOL] = Symbol::Section {
+            name: data_section.name,
+            section_number: 2,
+        };
+        self.symbols[Self::DATA_SYMBOL + 1] = Symbol::SectionAux {
+            length: data_section.size_of_raw_data as u32,
+            number_of_relocations: data_section.number_of_relocations as u16,
+        };
+        [table_section, data_section]
+    }
+
+    pub fn finish(mut self) -> Vec<u8> {
+        let timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as u32);
+
+        let mut file = FileWriter::default();
+
+        file.set_pos(FILE_HEADER_SIZE + SECTION_HEADER_SIZE * 2);
+        let sections = self.write_sections(&mut file);
+        let (symbol_table_pointer, symbol_numer) = self.write_symbol_table(&mut file);
+        file.write_bytes(&[0; 4]); // String table
+
+        file.set_pos(0);
+        file.write_u16(self.target_type.id());
+        file.write_u16(2); // number of sections
+        file.write_u32(timestamp);
+        file.write_u32(symbol_table_pointer as u32);
+        file.write_u32(symbol_numer as u32);
+        file.write_u16(0); // optional header size
+        file.write_u16(IMAGE_FILE_32BIT_MACHINE); // flags
+        assert_eq!(file.pos(), FILE_HEADER_SIZE);
+
+        for section in sections {
+            file.write_bytes(&section.name);
+            file.write_u32(0); // physical address
+            file.write_u32(0); // virtual address
+            file.write_u32(section.size_of_raw_data as u32);
+            file.write_u32(section.pointer_to_raw_data as u32);
+            file.write_u32(section.pointer_to_relocations as u32);
+            file.write_u32(0); // pointer to line numbers
+            file.write_u16(section.number_of_relocations as u16);
+            file.write_u16(0); // number of line numbers
+            file.write_u32(IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE);
+        }
+        assert_eq!(file.pos(), FILE_HEADER_SIZE + 2 * SECTION_HEADER_SIZE);
+
+        file.data
+    }
+}
+
+impl FileWriter {
+
+    pub fn write_table<K, V, F>(&mut self, table: &BTreeMap<K, V>, mut write_entry: F)
+    where K: Copy + Into<u32>, F: FnMut(&mut Self, &V) -> bool
+    {
+        self.write_u32(0); // Characteristics
+        self.write_u32(0); // TimeDateStamp
+        self.write_u16(0); // MajorVersion
+        self.write_u16(0); // MinorVersion
+        self.write_u16(0); // NumberOfNamedEntries
+        self.write_u16(table.len() as u16); // NumberOfIdEntries
+        let table_base = self.pos();
+        let mut frontier = table_base + table.len() * RESOURCE_TABLE_ENTRY_SIZE;
+        for (i, (ty, entry)) in table.iter().enumerate() {
+            self.set_pos(frontier);
+            let offset = self.current_offset();
+            let subdir = write_entry(self, entry);
+            frontier = self.pos();
+            self.set_pos(table_base + i * RESOURCE_TABLE_ENTRY_SIZE);
+            self.write_u32((*ty).into());
+            self.write_u32(offset as u32 | (subdir as u32) << 31);
+        }
+        self.set_pos(frontier);
+    }
+
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
+#[repr(transparent)]
+struct ResourceId(u32);
+
+impl From<ResourceId> for u32 {
+    fn from(id: ResourceId) -> u32 {
+        id.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
+#[repr(transparent)]
+struct LanguageId(u32);
+
+impl LanguageId {
+    const LANG_US: Self = Self(0x0409);
+}
+
+impl From<LanguageId> for u32 {
+    fn from(id: LanguageId) -> u32 {
+        id.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+struct ResourceLocation {
+    offset: usize,
+    size: usize,
+    symbol_id: usize
+}
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum RelocationType {
+enum RelocationType {
     Rva32
 }
 
@@ -41,226 +327,60 @@ impl RelocationType {
 
 }
 
-pub struct CoffWriter {
+#[derive(Default)]
+pub struct FileWriter {
     data: Vec<u8>,
-    relocations: u16,
-    data_start: usize,
-    relocation_start: usize,
-    target: TargetType
+    current_position: usize,
+    section_start: usize,
 }
 
-impl CoffWriter {
+impl FileWriter {
 
-    const HEADER_SIZE: usize = 60;
-
-    pub fn new(target: TargetType) -> Self {
-        Self {
-            data: vec![0u8; Self::HEADER_SIZE],
-            relocations: 0,
-            data_start: Self::HEADER_SIZE,
-            relocation_start: 0,
-            target,
-        }
+    pub fn set_pos(&mut self, pos: usize) {
+        self.current_position = pos;
     }
 
-    pub fn write_directory(&mut self, entries: u16) -> CoffDirectoryWriter {
-        CoffDirectoryWriter::allocate(self, entries)
+    pub fn mark_section_start(&mut self) {
+        self.section_start = self.current_position;
     }
 
-    pub fn write_relocation(&mut self, address: u32, ty: RelocationType) {
-        self.relocations += 1;
-        self.write_u32(address);
-        self.write_bytes(&[0, 0, 0, 0]);
-        self.write_u16(ty.id(self.target));
-    }
-
-    pub fn start_relocations(&mut self) {
-        self.relocation_start = self.pos();
-    }
-
-    pub fn finish(mut self) -> Vec<u8> {
-        let target = self.target;
-        let relocations = self.relocations;
-        let timestamp = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs() as u32);
-
-        let pointer_to_symbol_table = self.pos();
-        let relocation_start = self.relocation_start;
-        let data_size = relocation_start - self.data_start;
-
-        // Write the symbols and auxiliary data for the section.
-        self.write_bytes(b".rsrc\0\0\0"); // name
-        self.write_bytes(&[0, 0, 0, 0]); // address
-        self.write_bytes(&[1, 0]); // section number (1-based)
-        self.write_bytes(&[0, 0, 3, 1]); // type = 0, class = static, aux symbols = 1
-        self.write_u32(data_size as u32);
-        self.write_u16(self.relocations);
-        self.write_bytes(&[0; 12]);
-
-        // Write the empty string table.
-        self.write_bytes(&[0; 4]);
-
-        {
-            let mut h = self.slice(0, Self::HEADER_SIZE);
-
-            h.write_u16(target.id());
-            h.write_bytes(&[1, 0]); // number of sections
-            h.write_u32(timestamp);
-            h.write_u32(pointer_to_symbol_table as u32);
-            h.write_bytes(&[2, 0, 0, 0]); // number of symbol table entries
-            h.write_bytes(&[0; 4]); // optional header size = 0, characteristics = 0
-
-            // Write the section header.
-            h.write_bytes(b".rsrc\0\0\0");
-            h.write_u32(0); // physical address
-            h.write_u32(0); // virtual address
-            h.write_u32(data_size as u32);
-            h.write_bytes(&[60, 0, 0, 0]); // pointer to raw data
-            h.write_u32(relocation_start as u32); // pointer to relocations
-            h.write_bytes(&[0; 4]); // pointer to line numbers
-            h.write_u16(relocations);
-            h.write_bytes(&[0; 2]); // number of line numbers
-            h.write_bytes(&[0x40, 0, 0x30, 0xc0]); // characteristics
-
-        }
-
-
-        self.data
+    pub fn current_offset(&self) -> usize {
+        self.current_position - self.section_start
     }
 
 }
 
-impl BinaryWriter for CoffWriter {
+impl BinaryWriter for FileWriter {
     fn pos(&self) -> usize {
-        self.data.len()
+        self.current_position
     }
 
     fn reserve(&mut self, amount: usize) {
-        self.data.extend(repeat_n(0, amount))
+        self.current_position += amount;
     }
 
     fn write_bytes(&mut self, data: &[u8]) {
-        self.data.extend_from_slice(data)
+        self.write_bytes_at(self.current_position, data);
+        self.current_position += data.len();
     }
 
     fn write_bytes_at(&mut self, index: usize, data: &[u8]) {
-        self.data[index..(index + data.len())].copy_from_slice(data)
-    }
-
-    fn align_to(&mut self, i: usize) {
-        let required_padding = i - ((self.pos() - Self::HEADER_SIZE) % i);
-        self.reserve(required_padding)
-    }
-}
-
-pub struct CoffDirectoryWriter {
-    current_index: usize,
-    final_index: usize
-}
-
-impl CoffDirectoryWriter {
-    const ENTRY_SIZE: usize = 2 * size_of::<u32>();
-
-    fn allocate(cw: &mut CoffWriter, entries: u16) -> Self {
-
-        cw.write_u32(0); // Characteristics
-        cw.write_u32(0); // TimeDateStamp
-        cw.write_u16(0); // MajorVersion
-        cw.write_u16(0); // MinorVersion
-        cw.write_u16(0); // NumberOfNamedEntries
-        cw.write_u16(entries); // NumberOfIdEntries
-
-        let current = cw.pos();
-        cw.reserve(entries as usize * Self::ENTRY_SIZE);
-        Self {
-            current_index: current,
-            final_index: cw.pos(),
+        if index + data.len() > self.data.len() {
+            self.data.resize(index + data.len(), 0);
         }
-    }
-
-    fn write_entry(&mut self, cw: &mut CoffWriter, id: u32, leaf: bool) {
-        const SUB_DIR_BIT: usize = 0x80000000;
-        assert!(self.current_index < self.final_index, "Tried to add more entries to a directory than allowed ({} {})", self.current_index, self.final_index);
-        let mut offset = cw.pos() - CoffWriter::HEADER_SIZE;
-        assert_eq!(offset & SUB_DIR_BIT, 0, "Too much data");
-
-        if !leaf {
-            offset |= SUB_DIR_BIT;
-        }
-
-        let mut slice = cw.slice(self.current_index, Self::ENTRY_SIZE);
-        slice.write_u32(id);
-        slice.write_u32(offset as u32);
-
-        self.current_index += Self::ENTRY_SIZE;
-    }
-    
-    pub fn subdirectory(&mut self, cw: &mut CoffWriter, id: u32, entries: u16) -> CoffDirectoryWriter {
-        self.write_entry(cw, id, false);
-        Self::allocate(cw, entries)
-    }
-    
-    pub fn data_entry(&mut self, cw: &mut CoffWriter, id: u32) -> CoffDataEntry {
-        self.write_entry(cw, id, true);
-        CoffDataEntry::allocate(cw)
-    }
-    
-}
-
-impl Drop for CoffDirectoryWriter {
-    fn drop(&mut self) {
-        assert_eq!(self.current_index, self.final_index, "Not all entries were written")
+        self.data[index..index + data.len()].copy_from_slice(data);
     }
 }
 
-pub struct CoffDataEntry{
-    index: usize,
-    written: bool
-}
+const FILE_HEADER_SIZE: usize = 20;
+const SECTION_HEADER_SIZE: usize = 40;
 
-impl CoffDataEntry {
+const RESOURCE_TABLE_ENTRY_SIZE: usize = 8;
 
-    const ENTRY_SIZE: usize = 4 * size_of::<u32>();
+const IMAGE_SYM_CLASS_STATIC: u8 = 0x03;
 
-    fn allocate(cw: &mut CoffWriter) -> Self {
-        let current = cw.pos();
-        cw.reserve(Self::ENTRY_SIZE);
-        Self {
-            index: current,
-            written: false,
-        }
-    }
-    
-    pub fn write_data<B: BinaryWritable + ?Sized>(&mut self, coff: &mut CoffWriter, data: &B) {
-        coff.align_to(8);
-        let start = coff.pos();
+const IMAGE_FILE_32BIT_MACHINE: u16 = 0x0100;
 
-        data.write_to(coff);
-
-        let length = coff.pos() - start;
-        coff.align_to(8);
-
-        let offset = start - CoffWriter::HEADER_SIZE;
-        let mut slice = coff.slice(self.index, Self::ENTRY_SIZE);
-        slice.write_u32(offset as u32);  // OffsetToData
-        slice.write_u32(length as u32); // Size
-        slice.write_u32(0);          // CodePage
-        slice.write_u32(0);          // Reserve
-
-        self.written = true;
-    }
-
-    pub fn write_relocation(&self, coff: &mut CoffWriter) {
-        coff.write_relocation((self.index - coff.data_start) as u32, RelocationType::Rva32)
-    }
-
-}
-
-impl Drop for CoffDataEntry {
-    fn drop(&mut self) {
-        assert!(self.written, "A data entry was never written")
-    }
-}
-
-
+const IMAGE_SCN_CNT_INITIALIZED_DATA: u32 = 0x00000040;
+const IMAGE_SCN_MEM_READ: u32 = 0x40000000;
+const IMAGE_SCN_MEM_WRITE: u32 = 0x80000000;

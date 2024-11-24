@@ -21,53 +21,11 @@ pub trait BinaryWriter {
         self.write_bytes(&v.to_le_bytes())
     }
 
-    fn slice(&mut self, index: usize, length: usize) -> BinarySlice<'_> where Self: Sized {
-        BinarySlice {
-            inner: self,
-            start: index,
-            length,
-            pos: 0,
-        }
-    }
-
     fn align_to(&mut self, i: usize) {
         let required_padding = (i - (self.pos() % i)) % i;
         self.reserve(required_padding)
     }
 
-}
-
-pub struct BinarySlice<'a> {
-    inner: &'a mut dyn BinaryWriter,
-    start: usize,
-    length: usize,
-    pos: usize
-}
-
-impl<'a> BinaryWriter for BinarySlice<'a> {
-    fn pos(&self) -> usize {
-        self.pos
-    }
-
-    fn reserve(&mut self, _: usize) {
-        unimplemented!()
-    }
-
-    fn write_bytes(&mut self, data: &[u8]) {
-        assert!(self.pos + data.len() <= self.length);
-        self.inner.write_bytes_at(self.start + self.pos, data);
-        self.pos += data.len();
-    }
-
-    fn write_bytes_at(&mut self, _: usize, _: &[u8]) {
-        unimplemented!()
-    }
-}
-
-impl<'a> Drop for BinarySlice<'a> {
-    fn drop(&mut self) {
-        assert_eq!(self.pos, self.length)
-    }
 }
 
 pub trait BinaryWritable {

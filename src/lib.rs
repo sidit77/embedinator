@@ -1,16 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::env::var;
 use std::path::Path;
-use crate::coff::{CoffWriter};
+use crate::coff::CoffWriter;
 use crate::res::ResWriter;
 
 #[doc(hidden)]
 pub use crate::coff::TargetType;
 
 mod res;
-mod coff;
 mod binary;
-mod coff2;
+mod coff;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 #[repr(u16)]
@@ -259,8 +258,8 @@ impl ResourceBuilder {
         }
     }
 
-    pub fn compile_to_coff2(&self, target: TargetType) -> ResourceFile {
-        let mut writer = coff2::CoffWriter2::new(target);
+    pub fn compile_to_coff(&self, target: TargetType) -> ResourceFile {
+        let mut writer = CoffWriter::new(target);
 
         writer.add_resource(ResourceType::Version, 1, &self.version);
         for (id, icon) in &self.icons {
@@ -275,86 +274,6 @@ impl ResourceBuilder {
 
         ResourceFile {
             data: writer.finish(),
-            kind: ResourceFileKind::Coff
-        }
-    }
-
-    #[doc(hidden)]
-    pub fn compile_to_coff(&self, target: TargetType) -> ResourceFile {
-        let mut coff = CoffWriter::new(target);
-
-        const LANG_US: u32 = 0x0409;
-
-        let number_of_resource_types = 1 +
-            u16::from(self.manifest.is_some()) +
-            u16::from(self.icons.len() > 0) +
-            u16::from(self.icon_groups.len() > 0);
-
-        let mut data_entries = Vec::new();
-        let mut res_dir = coff.write_directory(number_of_resource_types);
-        {
-            let entry = res_dir
-                .subdirectory(&mut coff, ResourceType::Version as u32, 1)
-                .subdirectory(&mut coff, 1, 1)
-                .data_entry(&mut coff, LANG_US);
-            data_entries.push(entry);
-        }
-
-
-        if self.icons.len() > 0 {
-            let mut icon_dir = res_dir
-                .subdirectory(&mut coff, ResourceType::Icon as u32, self.icons.len() as u16);
-            for (id, _) in &self.icons {
-                let entry = icon_dir
-                    .subdirectory(&mut coff, *id as u32, 1)
-                    .data_entry(&mut coff, LANG_US);
-                data_entries.push(entry);
-            }
-        }
-        if self.icon_groups.len() > 0 {
-            let mut icon_dir = res_dir
-                .subdirectory(&mut coff, ResourceType::IconGroup as u32, self.icon_groups.len() as u16);
-            for (id, _) in &self.icon_groups {
-                let entry = icon_dir
-                    .subdirectory(&mut coff, *id as u32, 1)
-                    .data_entry(&mut coff, LANG_US);
-                data_entries.push(entry);
-            }
-        }
-        if self.manifest.is_some() {
-            let entry = res_dir
-                .subdirectory(&mut coff, ResourceType::Manifest as u32, 1)
-                .subdirectory(&mut coff, 1, 1)
-                .data_entry(&mut coff, LANG_US);
-            data_entries.push(entry);
-        }
-
-
-        {
-            let mut next_entry = data_entries.iter_mut();
-            let mut next_entry = move || next_entry.next().expect("not enough data entries");
-
-            next_entry().write_data(&mut coff, &self.version);
-            for (_, icon) in &self.icons {
-                next_entry().write_data(&mut coff, icon);
-            }
-            for (_, group) in &self.icon_groups {
-                next_entry().write_data(&mut coff, group.as_slice());
-            }
-            if let Some(manifest) = &self.manifest {
-                next_entry().write_data(&mut coff, manifest.as_bytes());
-            }
-        }
-
-        {
-            coff.start_relocations();
-            for e in data_entries {
-                e.write_relocation(&mut coff);
-            }
-        }
-
-        ResourceFile{
-            data: coff.finish(),
             kind: ResourceFileKind::Coff
         }
     }
@@ -375,7 +294,7 @@ impl ResourceBuilder {
 
         // COFF doesn't seem to work, idk why
         //self.compile_to_res()
-        self.compile_to_coff2(target)
+        self.compile_to_coff(target)
             .write_to_file(&out_file)
             .expect("Failed to write resource file");
 
