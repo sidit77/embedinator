@@ -2,5 +2,10 @@
 name = "embedinator"
 version = "0.1.0"
 edition = "2021"
+authors = ["sidit77"]
+license = "MIT"
+description = "A simple windows resource compiler that does not rely on external tools"
+repository = "https://github.com/sidit77/embedinator"
+readme = "Readme.md"
 
 [dependencies]
