@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::env::var;
 use std::path::Path;
 use crate::coff::{CoffWriter};
@@ -65,7 +65,7 @@ impl Version {
 
 /// Flags that indicate the file's status.
 /// See <https://learn.microsoft.com/en-us/windows/win32/api/verrsrc/ns-verrsrc-vs_fixedfileinfo>
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 #[repr(u8)]
 pub enum FileFlag {
     /// The file contains debugging information or is compiled with debugging features enabled.
@@ -89,8 +89,8 @@ struct VersionInfo {
     pub file_version: Version,
     pub product_version: Version,
     pub file_type: FileType,
-    pub flags: HashSet<FileFlag>,
-    pub strings: HashMap<String, String>,
+    pub flags: BTreeSet<FileFlag>,
+    pub strings: BTreeMap<String, String>,
 }
 
 /*
@@ -146,7 +146,7 @@ pub struct ResourceBuilder {
 
 impl ResourceBuilder {
 
-    pub fn from_evn() -> Self {
+    pub fn from_env() -> Self {
         println!("cargo:rerun-if-env-changed=CARGO_PKG_VERSION_MAJOR");
         println!("cargo:rerun-if-env-changed=CARGO_PKG_VERSION_MINOR");
         println!("cargo:rerun-if-env-changed=CARGO_PKG_VERSION_PATCH");
@@ -202,7 +202,9 @@ impl ResourceBuilder {
     }
 
     pub fn add_file_flags(mut self, flags: impl IntoIterator<Item=FileFlag>) -> Self {
-        self.version.flags.extend(flags);
+        for flag in flags {
+            self.version.flags.insert(flag);
+        }
         self
     }
 
@@ -263,6 +265,21 @@ impl ResourceBuilder {
 
         let mut data_entries = Vec::new();
         let mut res_dir = coff.write_directory(number_of_resource_types);
+        {
+            let entry = res_dir
+                .subdirectory(&mut coff, ResourceType::Version as u32, 1)
+                .subdirectory(&mut coff, 1, 1)
+                .data_entry(&mut coff, LANG_US);
+            data_entries.push(entry);
+        }
+        if self.manifest.is_some() {
+            let entry = res_dir
+                .subdirectory(&mut coff, ResourceType::Manifest as u32, 1)
+                .subdirectory(&mut coff, 1, 1)
+                .data_entry(&mut coff, LANG_US);
+            data_entries.push(entry);
+        }
+
         if self.icons.len() > 0 {
             let mut icon_dir = res_dir
                 .subdirectory(&mut coff, ResourceType::Icon as u32, self.icons.len() as u16);
@@ -283,36 +300,22 @@ impl ResourceBuilder {
                 data_entries.push(entry);
             }
         }
-        if self.manifest.is_some() {
-            let entry = res_dir
-                .subdirectory(&mut coff, ResourceType::Manifest as u32, 1)
-                .subdirectory(&mut coff, 1, 1)
-                .data_entry(&mut coff, LANG_US);
-            data_entries.push(entry);
-        }
-        {
-            let entry = res_dir
-                .subdirectory(&mut coff, ResourceType::Version as u32, 1)
-                .subdirectory(&mut coff, 1, 1)
-                .data_entry(&mut coff, LANG_US);
-            data_entries.push(entry);
-        }
+
 
         {
             let mut next_entry = data_entries.iter_mut();
             let mut next_entry = move || next_entry.next().expect("not enough data entries");
 
-
+            next_entry().write_data(&mut coff, &self.version);
+            if let Some(manifest) = &self.manifest {
+                next_entry().write_data(&mut coff, manifest.as_bytes());
+            }
             for (_, icon) in &self.icons {
                 next_entry().write_data(&mut coff, icon);
             }
             for (_, group) in &self.icon_groups {
                 next_entry().write_data(&mut coff, group.as_slice());
             }
-            if let Some(manifest) = &self.manifest {
-                next_entry().write_data(&mut coff, manifest.as_bytes());
-            }
-            next_entry().write_data(&mut coff, &self.version);
 
         }
 
@@ -332,7 +335,7 @@ impl ResourceBuilder {
     pub fn finish(self) {
         let target = var("CARGO_CFG_TARGET_ARCH")
             .expect("No CARGO_CFG_TARGET_ARCH env var");
-        let target = match target.as_str() {
+        let _target = match target.as_str() {
             "x86_64" => TargetType::X86_64,
             "x86" => TargetType::I386,
             "aarch64" => TargetType::Aarch64,
@@ -343,7 +346,8 @@ impl ResourceBuilder {
             .expect("No OUT_DIR env var");
         let out_file = format!("{out_dir}/resources.lib");
 
-        self.compile_to_coff(target)
+        // COFF doesn't seem to work, idk why
+        self.compile_to_res()
             .write_to_file(&out_file)
             .expect("Failed to write resource file");
 

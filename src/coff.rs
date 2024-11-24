@@ -233,6 +233,7 @@ impl CoffDataEntry {
     }
     
     pub fn write_data<B: BinaryWritable + ?Sized>(&mut self, coff: &mut CoffWriter, data: &B) {
+        coff.align_to(8);
         let start = coff.pos();
 
         data.write_to(coff);

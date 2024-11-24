@@ -135,7 +135,7 @@ impl BinaryWritable for Version {
 
 impl BinaryWritable for VersionInfo {
     fn write_to<W: BinaryWriter>(&self, writer: &mut W) {
-        let mut w = version::VersionWriter(writer);
+        let mut w = version::VersionWriter::new(writer);
         // https://learn.microsoft.com/en-us/windows/win32/menurc/vs-versioninfo
         w.write_field(FieldType::Binary, "VS_VERSION_INFO", FieldValue::header(|w | {
             // https://learn.microsoft.com/en-us/windows/win32/api/verrsrc/ns-verrsrc-vs_fixedfileinfo
@@ -208,9 +208,19 @@ mod version {
         }
     }
 
-    pub struct VersionWriter<'a>(pub &'a mut dyn BinaryWriter);
+    pub struct VersionWriter<'a>{
+        inner: &'a mut dyn BinaryWriter,
+        start: usize
+    }
 
     impl<'a> VersionWriter<'a> {
+
+        pub fn new(inner: &'a mut dyn BinaryWriter) -> Self {
+            Self {
+                start: inner.pos(),
+                inner,
+            }
+        }
 
         fn reserve_u16(&mut self) -> usize {
             let pos = self.pos();
@@ -258,19 +268,19 @@ mod version {
 
     impl<'a> BinaryWriter for VersionWriter<'a> {
         fn pos(&self) -> usize {
-            self.0.pos()
+            self.inner.pos() - self.start
         }
 
         fn reserve(&mut self, amount: usize) {
-            self.0.reserve(amount)
+            self.inner.reserve(amount)
         }
 
         fn write_bytes(&mut self, data: &[u8]) {
-            self.0.write_bytes(data)
+            self.inner.write_bytes(data)
         }
 
         fn write_bytes_at(&mut self, index: usize, data: &[u8]) {
-            self.0.write_bytes_at(index, data)
+            self.inner.write_bytes_at(index + self.start, data)
         }
     }
 
