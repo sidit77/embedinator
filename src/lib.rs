@@ -1,3 +1,23 @@
+//!  A simple utility for embedding resources in Windows executables.
+//!
+//!  # Example
+//!
+//!  ```rust
+//! #[cfg(windows)]
+//! fn main() {
+//!     embedinator::ResourceBuilder::from_env()
+//!         .add_manifest(std::fs::read_to_string("assets/app.manifest").unwrap())
+//!         .add_icon(32512, Icon::from_png_bytes(std::fs::read("app.png").unwrap()))
+//!         .finish();
+//!     println!("cargo:rerun-if-changed=app.manifest");
+//!     println!("cargo:rerun-if-changed=app.png");
+//! }
+//!  ```
+//!
+//!  # Limitations
+//!  Currently always sets the language to 0x0409 (English, US) as I don't fully understand how multilingual resource files are supposed to look like.
+
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::env::var;
 use std::path::Path;
@@ -47,6 +67,8 @@ impl ResourceType {
 
 }
 
+/// The type of the file.
+/// The specification defines even more formats, that could be added in the future if needed.
 #[derive(Default, Debug, Copy, Clone, Eq, PartialEq)]
 #[repr(u8)]
 pub enum FileType {
@@ -55,6 +77,7 @@ pub enum FileType {
     Dll = 2
 }
 
+/// A version number.
 #[derive(Default, Debug, Copy, Clone, Eq, PartialEq)]
 pub struct Version {
     pub major: u16,
@@ -70,7 +93,6 @@ impl Version {
 }
 
 /// Flags that indicate the file's status.
-/// See <https://learn.microsoft.com/en-us/windows/win32/api/verrsrc/ns-verrsrc-vs_fixedfileinfo>
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 #[repr(u8)]
 pub enum FileFlag {
@@ -99,30 +121,14 @@ struct VersionInfo {
     pub strings: BTreeMap<String, String>,
 }
 
-/*
-impl Default for VersionInfo {
-    fn default() -> Self {
-        Self {
-            file_version: Version::new(0, 1, 0, 0),
-            product_version: Version::new(0, 1, 0, 0),
-            file_type: FileType::Exe,
-            flags: HashSet::new(),
-            strings: HashMap::from([
-                (String::from("ProductVersion"), String::from("0.1.0")),
-                (String::from("FileVersion"), String::from("0.1.0")),
-                (String::from("ProductName"), String::from("rusty-twinkle-tray")),
-                (String::from("FileDescription"), String::from("rusty-twinkle-tray"))
-            ]),
-        }
-    }
-}
- */
-
+/// An Icon resource.
 #[derive(Clone, Eq, PartialEq)]
 pub struct Icon(Vec<u8>);
 
 impl Icon {
 
+    /// Create an icon from a PNG file. The PNG must contain 32bpp RGBA data.
+    /// Other icon format are not currently not supported, but could be added in the future
     pub fn from_png_bytes(data: Vec<u8>) -> Self {
         assert_eq!(&data[..8], &[137, 80, 78, 71, 13, 10, 26, 10], "Invalid PNG file");
         assert_eq!(&data[12..16], b"IHDR", "Invalid PNG file");
@@ -142,6 +148,7 @@ struct IconGroupEntry {
     icon_size: usize
 }
 
+/// A builder for compiling a new resource file in a cargo build script and setting the correct linker flags.
 #[derive(Default, Clone)]
 pub struct ResourceBuilder {
     version: VersionInfo,
@@ -152,6 +159,7 @@ pub struct ResourceBuilder {
 
 impl ResourceBuilder {
 
+    /// Automatically fills many fields with values from environment variables set by cargo.
     pub fn from_env() -> Self {
         println!("cargo:rerun-if-env-changed=CARGO_PKG_VERSION_MAJOR");
         println!("cargo:rerun-if-env-changed=CARGO_PKG_VERSION_MINOR");
@@ -258,6 +266,7 @@ impl ResourceBuilder {
         }
     }
 
+    #[doc(hidden)]
     pub fn compile_to_coff(&self, target: TargetType) -> ResourceFile {
         let mut writer = CoffWriter::new(target);
 

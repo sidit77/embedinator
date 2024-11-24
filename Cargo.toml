@@ -1,5 +1,5 @@
 [package]
-name = "windows-resource-compiler"
+name = "embedinator"
 version = "0.1.0"
 edition = "2021"
 

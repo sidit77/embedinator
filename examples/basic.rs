@@ -1,4 +1,4 @@
-use windows_resource_compiler::{ResourceBuilder, TargetType, Version};
+use embedinator::{ResourceBuilder, TargetType, Version};
 
 fn main() {
     ResourceBuilder::default()
